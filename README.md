@@ -16,8 +16,7 @@ Run from a project repository:
 node bin/token-governor.js init
 node bin/token-governor.js snapshot \
   --5h-remaining 150000 --5h-limit 200000 --5h-reset-at 2026-06-27T05:00:00.000Z \
-  --weekly-remaining 950000 --weekly-limit 1000000 --weekly-reset-at 2026-07-04T00:00:00.000Z \
-  --cold-start-tokens 60000
+  --weekly-remaining 950000 --weekly-limit 1000000 --weekly-reset-at 2026-07-04T00:00:00.000Z
 node bin/token-governor.js check LIN-123
 node bin/token-governor.js check LIN-123 --wait
 node bin/token-governor.js complete LIN-123 --tokens 18000
@@ -47,7 +46,7 @@ TOKEN_GOVERNOR_STATE=/path/to/state.json node bin/token-governor.js check LIN-12
 2. Run `token-governor check <issue-id>` before starting implementation.
 3. If the result is `ALLOW`, start the selected issue.
 4. If the result is `HOLD`, stop and wait for the Codex rate-limit reset. Do not search for another issue.
-5. If the result is `UNKNOWN`, add completion history or set `--cold-start-tokens`, then retry.
+5. If the result is `UNKNOWN`, fix the missing or malformed state, then retry.
 6. After finishing an issue, record actual usage with `complete`.
 
 Use `check <issue-id> --wait` when Codex should park before the limit is exhausted. The CLI sleeps silently until the blocking window reset plus a small buffer, then checks the same issue again.
@@ -75,7 +74,7 @@ node bin/token-governor.js snapshot --remaining 120000 --limit 200000 --reserve 
 
 - Use the last 10 completed issues.
 - Predict the next issue with the p75 token usage from that history.
-- If there is no completion history, use `coldStartTokens` from the latest `snapshot`.
+- If there is no completion history, use `coldStartTokens`. The default is `60000`.
 - For each configured budget window, compute `usedTokens = limitTokens - remainingTokens`.
 - Compute window usable budget as `floor(limitTokens * maxUsageRatio) - usedTokens`.
 - Hold when the predicted next issue would cross any configured window cap.
@@ -84,7 +83,14 @@ node bin/token-governor.js snapshot --remaining 120000 --limit 200000 --reserve 
 - After `resetAt`, use `limitTokens - reserveTokens` when `--limit` was recorded.
 - Allow work only when usable budget covers predicted usage.
 
-Without completion history or `--cold-start-tokens`, `check` returns `UNKNOWN` and does not start work.
+Override the first-issue prediction only when the default is too high or too low for your project:
+
+```sh
+node bin/token-governor.js snapshot \
+  --5h-remaining 150000 --5h-limit 200000 --5h-reset-at 2026-06-27T05:00:00.000Z \
+  --weekly-remaining 950000 --weekly-limit 1000000 --weekly-reset-at 2026-07-04T00:00:00.000Z \
+  --cold-start-tokens 45000
+```
 
 `check --wait` also accepts:
 

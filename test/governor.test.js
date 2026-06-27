@@ -154,11 +154,11 @@ test('decideCheck holds before crossing the weekly usage cap', () => {
   assert.equal(result.resetAt, '2026-07-04T00:00:00.000Z');
 });
 
-test('decideCheck returns UNKNOWN when there is no completion history', () => {
+test('decideCheck uses the default cold-start prediction when there is no completion history', () => {
   const state = {
     ...initialState(),
     budget: {
-      remainingTokens: 1_000,
+      remainingTokens: 100_000,
       limitTokens: null,
       reserveTokens: 100,
       resetAt: '2026-06-27T12:00:00.000Z',
@@ -167,11 +167,39 @@ test('decideCheck returns UNKNOWN when there is no completion history', () => {
   };
 
   assert.deepEqual(decideCheck(state, 'PK6-1'), {
-    status: 'UNKNOWN',
-    exitCode: 12,
+    status: 'ALLOW',
+    exitCode: 0,
     issueId: 'PK6-1',
-    reason: 'no_completion_history'
+    predictedTokens: 60_000,
+    predictionSource: 'cold_start',
+    usableBudget: 99_900,
+    remainingTokens: 100_000,
+    limitTokens: null,
+    reserveTokens: 100,
+    resetAt: '2026-06-27T12:00:00.000Z'
   });
+});
+
+test('decideCheck uses the default cold-start prediction for legacy null config', () => {
+  const state = {
+    ...initialState(),
+    budget: {
+      remainingTokens: 100_000,
+      limitTokens: null,
+      reserveTokens: 100,
+      resetAt: '2026-06-27T12:00:00.000Z',
+      updatedAt: '2026-06-27T00:00:00.000Z'
+    },
+    prediction: {
+      coldStartTokens: null
+    }
+  };
+
+  const result = decideCheck(state, 'PK6-1');
+
+  assert.equal(result.status, 'ALLOW');
+  assert.equal(result.predictedTokens, 60_000);
+  assert.equal(result.predictionSource, 'cold_start');
 });
 
 test('decideCheck uses cold-start tokens when there is no completion history', () => {

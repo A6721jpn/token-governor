@@ -208,16 +208,26 @@ test('check exits HOLD when predicted burn would cross a window usage cap', () =
   assert.deepEqual(result.json.blockingWindows, ['fiveHour']);
 });
 
-test('check exits UNKNOWN when there is no completion history', () => {
+test('check uses the default cold-start prediction when there is no completion history', () => {
   const statePath = tempStatePath();
   run(['init'], statePath);
-  run(['snapshot', '--remaining', '1000', '--reserve', '100', '--reset-at', '2026-06-28T00:00:00.000Z'], statePath);
+  const snapshot = run([
+    'snapshot',
+    '--remaining',
+    '100000',
+    '--reserve',
+    '100',
+    '--reset-at',
+    '2026-06-28T00:00:00.000Z'
+  ], statePath);
 
   const result = run(['check', 'LIN-1'], statePath);
 
-  assert.equal(result.status, 12);
-  assert.equal(result.json.status, 'UNKNOWN');
-  assert.equal(result.json.reason, 'no_completion_history');
+  assert.equal(snapshot.json.prediction.coldStartTokens, 60000);
+  assert.equal(result.status, 0);
+  assert.equal(result.json.status, 'ALLOW');
+  assert.equal(result.json.predictedTokens, 60000);
+  assert.equal(result.json.predictionSource, 'cold_start');
 });
 
 test('check --wait holds instead of sleeping past max wait', () => {

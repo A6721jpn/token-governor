@@ -1,3 +1,5 @@
+export const DEFAULT_COLD_START_TOKENS = 60_000;
+
 export function initialState() {
   return {
     version: 1,
@@ -9,7 +11,7 @@ export function initialState() {
       updatedAt: null
     },
     prediction: {
-      coldStartTokens: null
+      coldStartTokens: DEFAULT_COLD_START_TOKENS
     },
     history: []
   };
@@ -53,9 +55,14 @@ function normalizeBudget(budget) {
 }
 
 function normalizePrediction(prediction) {
-  return {
+  const normalized = {
     ...initialState().prediction,
     ...(prediction ?? {})
+  };
+
+  return {
+    ...normalized,
+    coldStartTokens: normalized.coldStartTokens ?? DEFAULT_COLD_START_TOKENS
   };
 }
 
@@ -231,14 +238,18 @@ export function decideCheck(state, issueId, { now = new Date().toISOString() } =
 }
 
 function applyPredictionSnapshot(state, snapshot) {
+  const prediction = normalizePrediction(state.prediction);
   if (snapshot.coldStartTokens === undefined) {
-    return state;
+    return {
+      ...state,
+      prediction
+    };
   }
 
   return {
     ...state,
     prediction: {
-      ...normalizePrediction(state.prediction),
+      ...prediction,
       coldStartTokens: snapshot.coldStartTokens
     }
   };
