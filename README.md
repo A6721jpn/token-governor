@@ -16,13 +16,22 @@ Run from a project repository:
 node bin/token-governor.js init
 node bin/token-governor.js snapshot \
   --5h-remaining 150000 --5h-limit 200000 --5h-reset-at 2026-06-27T05:00:00.000Z \
-  --weekly-remaining 950000 --weekly-limit 1000000 --weekly-reset-at 2026-07-04T00:00:00.000Z
+  --weekly-remaining 950000 --weekly-limit 1000000 --weekly-reset-at 2026-07-04T00:00:00.000Z \
+  --cold-start-tokens 60000
 node bin/token-governor.js check LIN-123
 node bin/token-governor.js check LIN-123 --wait
 node bin/token-governor.js complete LIN-123 --tokens 18000
 ```
 
-By default, state is stored at `.token-governor/state.json`.
+By default, state is stored at `.token-governor/state.json` under the current working directory. Run the CLI from the project repository you are governing.
+
+If the CLI is launched from another directory, pass the governed project explicitly:
+
+```sh
+node /path/to/token-governor/bin/token-governor.js --project-dir /path/to/project check LIN-123
+```
+
+`TOKEN_GOVERNOR_PROJECT_DIR` can also set the governed project directory.
 
 To store state elsewhere:
 
@@ -30,7 +39,7 @@ To store state elsewhere:
 TOKEN_GOVERNOR_STATE=/path/to/state.json node bin/token-governor.js check LIN-123
 ```
 
-`CODEX_GOVERNOR_STATE` is also accepted as an alias.
+`TOKEN_GOVERNOR_STATE` and `CODEX_GOVERNOR_STATE` override the project-local state path. Use them only when you intentionally want a custom state file.
 
 ## Codex App Workflow
 
@@ -38,7 +47,7 @@ TOKEN_GOVERNOR_STATE=/path/to/state.json node bin/token-governor.js check LIN-12
 2. Run `token-governor check <issue-id>` before starting implementation.
 3. If the result is `ALLOW`, start the selected issue.
 4. If the result is `HOLD`, stop and wait for the Codex rate-limit reset. Do not search for another issue.
-5. If the result is `UNKNOWN`, add completion history or stop until a human sets the policy.
+5. If the result is `UNKNOWN`, add completion history or set `--cold-start-tokens`, then retry.
 6. After finishing an issue, record actual usage with `complete`.
 
 Use `check <issue-id> --wait` when Codex should park before the limit is exhausted. The CLI sleeps silently until the blocking window reset plus a small buffer, then checks the same issue again.
@@ -66,6 +75,7 @@ node bin/token-governor.js snapshot --remaining 120000 --limit 200000 --reserve 
 
 - Use the last 10 completed issues.
 - Predict the next issue with the p75 token usage from that history.
+- If there is no completion history, use `coldStartTokens` from the latest `snapshot`.
 - For each configured budget window, compute `usedTokens = limitTokens - remainingTokens`.
 - Compute window usable budget as `floor(limitTokens * maxUsageRatio) - usedTokens`.
 - Hold when the predicted next issue would cross any configured window cap.
@@ -73,6 +83,8 @@ node bin/token-governor.js snapshot --remaining 120000 --limit 200000 --reserve 
 - With the legacy single-budget form, compute usable budget as `remainingTokens - reserveTokens`.
 - After `resetAt`, use `limitTokens - reserveTokens` when `--limit` was recorded.
 - Allow work only when usable budget covers predicted usage.
+
+Without completion history or `--cold-start-tokens`, `check` returns `UNKNOWN` and does not start work.
 
 `check --wait` also accepts:
 

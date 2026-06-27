@@ -11,11 +11,33 @@ import {
 
 const EXIT_INVALID = 20;
 
-function statePath() {
+function parseGlobalOptions(argv) {
+  const args = [...argv];
+  let projectDir = process.env.TOKEN_GOVERNOR_PROJECT_DIR ?? process.cwd();
+
+  for (let index = 0; index < args.length;) {
+    if (args[index] !== '--project-dir') {
+      index += 1;
+      continue;
+    }
+
+    const value = args[index + 1];
+    if (!value || value.startsWith('--')) {
+      throw new Error('Missing value for option: --project-dir');
+    }
+
+    projectDir = value;
+    args.splice(index, 2);
+  }
+
+  return { args, projectDir };
+}
+
+function statePath(projectDir) {
   return (
     process.env.TOKEN_GOVERNOR_STATE ??
     process.env.CODEX_GOVERNOR_STATE ??
-    join(process.cwd(), '.token-governor', 'state.json')
+    join(projectDir, '.token-governor', 'state.json')
   );
 }
 
@@ -116,8 +138,9 @@ function sleep(ms) {
 }
 
 async function run(argv) {
-  const [command, ...args] = argv;
-  const path = statePath();
+  const { args: commandArgs, projectDir } = parseGlobalOptions(argv);
+  const [command, ...args] = commandArgs;
+  const path = statePath(projectDir);
 
   if (command === 'init') {
     const state = existsSync(path) ? readState(path) : initialState();
@@ -126,35 +149,65 @@ async function run(argv) {
   }
 
   if (command === 'snapshot') {
+    const coldStartTokens = optionalTokenCount(
+      option(args, '--cold-start-tokens', { fallback: null }),
+      '--cold-start-tokens'
+    );
     const windowEntries = [
       parseWindow(args, '5h', 'fiveHour', 0.9),
       parseWindow(args, 'weekly', 'weekly', 0.95)
     ].filter(Boolean);
 
     if (windowEntries.length > 0) {
-      const state = updateSnapshot(readState(path), {
+      const snapshot = {
         windows: Object.fromEntries(windowEntries),
         now: nowIso()
-      });
+      };
+      if (coldStartTokens !== null) {
+        snapshot.coldStartTokens = coldStartTokens;
+      }
+
+      const state = updateSnapshot(readState(path), snapshot);
 
       writeState(path, state);
-      return { exitCode: 0, body: { status: 'OK', statePath: path, budget: state.budget } };
+      return {
+        exitCode: 0,
+        body: {
+          status: 'OK',
+          statePath: path,
+          budget: state.budget,
+          prediction: state.prediction
+        }
+      };
     }
 
     const remainingTokens = tokenCount(option(args, '--remaining', { required: true }), '--remaining');
     const limitTokens = optionalTokenCount(option(args, '--limit', { fallback: null }), '--limit');
     const reserveTokens = tokenCount(option(args, '--reserve', { fallback: '0' }), '--reserve');
     const resetAt = option(args, '--reset-at', { required: true });
-    const state = updateSnapshot(readState(path), {
+    const snapshot = {
       remainingTokens,
       limitTokens,
       reserveTokens,
       resetAt,
       now: nowIso()
-    });
+    };
+    if (coldStartTokens !== null) {
+      snapshot.coldStartTokens = coldStartTokens;
+    }
+
+    const state = updateSnapshot(readState(path), snapshot);
 
     writeState(path, state);
-    return { exitCode: 0, body: { status: 'OK', statePath: path, budget: state.budget } };
+    return {
+      exitCode: 0,
+      body: {
+        status: 'OK',
+        statePath: path,
+        budget: state.budget,
+        prediction: state.prediction
+      }
+    };
   }
 
   if (command === 'check') {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,20 +13,29 @@ function tempStatePath() {
 }
 
 function run(args, statePath, env = {}) {
+  const mergedEnv = {
+    ...process.env,
+    TOKEN_GOVERNOR_NOW: '2026-06-27T00:00:00.000Z',
+    ...env
+  };
+
+  if (statePath !== null) {
+    mergedEnv.TOKEN_GOVERNOR_STATE = statePath;
+  }
+
   const result = spawnSync(process.execPath, [cliPath, ...args], {
     encoding: 'utf8',
-    env: {
-      ...process.env,
-      TOKEN_GOVERNOR_STATE: statePath,
-      TOKEN_GOVERNOR_NOW: '2026-06-27T00:00:00.000Z',
-      ...env
-    }
+    env: mergedEnv
   });
 
   return {
     ...result,
     json: result.stdout.trim() ? JSON.parse(result.stdout) : null
   };
+}
+
+function tempProjectDir() {
+  return mkdtempSync(join(tmpdir(), 'token-governor-project-'));
 }
 
 test('init creates a state file', () => {
@@ -57,6 +66,41 @@ test('snapshot records the current budget', () => {
   assert.equal(result.json.budget.remainingTokens, 1200);
   assert.equal(result.json.budget.limitTokens, null);
   assert.equal(result.json.budget.reserveTokens, 200);
+});
+
+test('snapshot records cold-start tokens for first issue prediction', () => {
+  const statePath = tempStatePath();
+  run(['init'], statePath);
+  const result = run([
+    'snapshot',
+    '--remaining',
+    '1200',
+    '--reserve',
+    '200',
+    '--reset-at',
+    '2026-06-28T00:00:00.000Z',
+    '--cold-start-tokens',
+    '700'
+  ], statePath);
+
+  assert.equal(result.status, 0);
+  assert.equal(result.json.prediction.coldStartTokens, 700);
+
+  const check = run(['check', 'LIN-1'], statePath);
+  assert.equal(check.status, 0);
+  assert.equal(check.json.status, 'ALLOW');
+  assert.equal(check.json.predictedTokens, 700);
+  assert.equal(check.json.predictionSource, 'cold_start');
+});
+
+test('global --project-dir stores state under the target project', () => {
+  const projectDir = tempProjectDir();
+  const result = run(['--project-dir', projectDir, 'init'], null);
+  const expectedPath = join(projectDir, '.token-governor', 'state.json');
+
+  assert.equal(result.status, 0);
+  assert.equal(result.json.statePath, expectedPath);
+  assert.equal(existsSync(expectedPath), true);
 });
 
 test('snapshot can record the reset limit for wait mode', () => {

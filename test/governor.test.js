@@ -174,6 +174,35 @@ test('decideCheck returns UNKNOWN when there is no completion history', () => {
   });
 });
 
+test('decideCheck uses cold-start tokens when there is no completion history', () => {
+  const state = {
+    ...initialState(),
+    budget: {
+      remainingTokens: 1_000,
+      limitTokens: null,
+      reserveTokens: 100,
+      resetAt: '2026-06-27T12:00:00.000Z',
+      updatedAt: '2026-06-27T00:00:00.000Z'
+    },
+    prediction: {
+      coldStartTokens: 700
+    }
+  };
+
+  assert.deepEqual(decideCheck(state, 'PK6-1'), {
+    status: 'ALLOW',
+    exitCode: 0,
+    issueId: 'PK6-1',
+    predictedTokens: 700,
+    predictionSource: 'cold_start',
+    usableBudget: 900,
+    remainingTokens: 1_000,
+    limitTokens: null,
+    reserveTokens: 100,
+    resetAt: '2026-06-27T12:00:00.000Z'
+  });
+});
+
 test('updateSnapshot stores the current token budget', () => {
   const state = updateSnapshot(initialState(), {
     remainingTokens: 12_345,

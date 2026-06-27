@@ -8,6 +8,9 @@ export function initialState() {
       resetAt: null,
       updatedAt: null
     },
+    prediction: {
+      coldStartTokens: null
+    },
     history: []
   };
 }
@@ -46,6 +49,33 @@ function normalizeBudget(budget) {
   return {
     ...initialState().budget,
     ...(budget ?? {})
+  };
+}
+
+function normalizePrediction(prediction) {
+  return {
+    ...initialState().prediction,
+    ...(prediction ?? {})
+  };
+}
+
+function predictForState(state) {
+  const historyPrediction = predictTokens(state.history ?? []);
+  if (historyPrediction !== null) {
+    return {
+      tokens: historyPrediction,
+      source: 'history'
+    };
+  }
+
+  const coldStartTokens = normalizePrediction(state.prediction).coldStartTokens;
+  if (coldStartTokens === null || coldStartTokens === undefined) {
+    return null;
+  }
+
+  return {
+    tokens: Number(coldStartTokens),
+    source: 'cold_start'
   };
 }
 
@@ -129,9 +159,9 @@ function latestResetAt(windows) {
 }
 
 export function decideCheck(state, issueId, { now = new Date().toISOString() } = {}) {
-  const predictedTokens = predictTokens(state.history ?? []);
+  const prediction = predictForState(state);
 
-  if (predictedTokens === null) {
+  if (prediction === null) {
     return {
       status: 'UNKNOWN',
       exitCode: 12,
@@ -140,6 +170,10 @@ export function decideCheck(state, issueId, { now = new Date().toISOString() } =
     };
   }
 
+  const predictedTokens = prediction.tokens;
+  const predictionFields = prediction.source === 'cold_start'
+    ? { predictionSource: 'cold_start' }
+    : {};
   const budget = normalizeBudget(state.budget);
   if (hasBudgetWindows(budget)) {
     const windows = Object.entries(normalizeWindows(budget.windows)).map(([name, window]) => (
@@ -152,6 +186,7 @@ export function decideCheck(state, issueId, { now = new Date().toISOString() } =
       exitCode: blocking.length === 0 ? 0 : 10,
       issueId,
       predictedTokens,
+      ...predictionFields,
       usableBudget,
       windows,
       blockingWindows: blocking.map((window) => window.name),
@@ -177,6 +212,7 @@ export function decideCheck(state, issueId, { now = new Date().toISOString() } =
     exitCode: usableBudget >= predictedTokens ? 0 : 10,
     issueId,
     predictedTokens,
+    ...predictionFields,
     usableBudget,
     remainingTokens,
     limitTokens,
@@ -192,6 +228,20 @@ export function decideCheck(state, issueId, { now = new Date().toISOString() } =
   }
 
   return base;
+}
+
+function applyPredictionSnapshot(state, snapshot) {
+  if (snapshot.coldStartTokens === undefined) {
+    return state;
+  }
+
+  return {
+    ...state,
+    prediction: {
+      ...normalizePrediction(state.prediction),
+      coldStartTokens: snapshot.coldStartTokens
+    }
+  };
 }
 
 export function planWait(
@@ -232,16 +282,16 @@ export function planWait(
 
 export function updateSnapshot(state, snapshot) {
   if (snapshot.windows) {
-    return {
+    return applyPredictionSnapshot({
       ...state,
       budget: {
         windows: normalizeWindows(snapshot.windows),
         updatedAt: snapshot.now
       }
-    };
+    }, snapshot);
   }
 
-  return {
+  return applyPredictionSnapshot({
     ...state,
     budget: {
       remainingTokens: snapshot.remainingTokens,
@@ -250,7 +300,7 @@ export function updateSnapshot(state, snapshot) {
       resetAt: snapshot.resetAt,
       updatedAt: snapshot.now
     }
-  };
+  }, snapshot);
 }
 
 export function appendCompletion(state, completion) {
