@@ -180,6 +180,25 @@ test('decideCheck uses the default cold-start prediction when there is no comple
   });
 });
 
+test('decideCheck bootstraps default budget windows when no budget snapshot exists', () => {
+  const result = decideCheck(initialState(), 'PK6-140', {
+    now: '2026-06-27T00:00:00.000Z'
+  });
+
+  assert.equal(result.status, 'ALLOW');
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.issueId, 'PK6-140');
+  assert.equal(result.predictedTokens, 60_000);
+  assert.equal(result.predictionSource, 'cold_start');
+  assert.equal(result.budgetSource, 'default_unconfigured');
+  assert.equal(result.usableBudget, 180_000);
+  assert.deepEqual(result.blockingWindows, []);
+  assert.equal(result.windows[0].name, 'fiveHour');
+  assert.equal(result.windows[0].resetAt, '2026-06-27T05:00:00.000Z');
+  assert.equal(result.windows[1].name, 'weekly');
+  assert.equal(result.windows[1].resetAt, '2026-07-04T00:00:00.000Z');
+});
+
 test('decideCheck uses the default cold-start prediction for legacy null config', () => {
   const state = {
     ...initialState(),

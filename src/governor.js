@@ -37,6 +37,17 @@ const DEFAULT_WINDOW_USAGE_RATIOS = {
   weekly: 0.95
 };
 
+const DEFAULT_BOOTSTRAP_BUDGET_WINDOWS = {
+  fiveHour: {
+    limitTokens: 200_000,
+    durationMs: 5 * 60 * 60 * 1000
+  },
+  weekly: {
+    limitTokens: 1_000_000,
+    durationMs: 7 * 24 * 60 * 60 * 1000
+  }
+};
+
 function hasResetReached(resetAt, now) {
   if (!resetAt) {
     return false;
@@ -89,6 +100,36 @@ function predictForState(state) {
 function hasBudgetWindows(budget) {
   const windows = budget?.windows;
   return Boolean(windows) && Object.keys(windows).length > 0;
+}
+
+function addDuration(now, durationMs) {
+  const parsed = Date.parse(now);
+  const baseTime = Number.isFinite(parsed) ? parsed : Date.now();
+  return new Date(baseTime + durationMs).toISOString();
+}
+
+function defaultBootstrapWindows(now) {
+  return Object.fromEntries(
+    Object.entries(DEFAULT_BOOTSTRAP_BUDGET_WINDOWS).map(([name, config]) => [
+      name,
+      {
+        remainingTokens: config.limitTokens,
+        limitTokens: config.limitTokens,
+        reserveTokens: 0,
+        maxUsageRatio: DEFAULT_WINDOW_USAGE_RATIOS[name],
+        resetAt: addDuration(now, config.durationMs)
+      }
+    ])
+  );
+}
+
+function isBudgetUnconfigured(budget) {
+  return !hasBudgetWindows(budget)
+    && budget.remainingTokens === null
+    && budget.limitTokens === null
+    && Number(budget.reserveTokens ?? 0) === 0
+    && budget.resetAt === null
+    && budget.updatedAt === null;
 }
 
 function normalizeWindow(name, window) {
@@ -181,7 +222,18 @@ export function decideCheck(state, issueId, { now = new Date().toISOString() } =
   const predictionFields = prediction.source === 'cold_start'
     ? { predictionSource: 'cold_start' }
     : {};
-  const budget = normalizeBudget(state.budget);
+  const normalizedBudget = normalizeBudget(state.budget);
+  const budgetIsUnconfigured = isBudgetUnconfigured(normalizedBudget);
+  const budget = budgetIsUnconfigured
+    ? {
+      ...normalizedBudget,
+      windows: defaultBootstrapWindows(now)
+    }
+    : normalizedBudget;
+  const budgetFields = budgetIsUnconfigured
+    ? { budgetSource: 'default_unconfigured' }
+    : {};
+
   if (hasBudgetWindows(budget)) {
     const windows = Object.entries(normalizeWindows(budget.windows)).map(([name, window]) => (
       windowStatus(name, window, now)
@@ -194,6 +246,7 @@ export function decideCheck(state, issueId, { now = new Date().toISOString() } =
       issueId,
       predictedTokens,
       ...predictionFields,
+      ...budgetFields,
       usableBudget,
       windows,
       blockingWindows: blocking.map((window) => window.name),
@@ -220,6 +273,7 @@ export function decideCheck(state, issueId, { now = new Date().toISOString() } =
     issueId,
     predictedTokens,
     ...predictionFields,
+    ...budgetFields,
     usableBudget,
     remainingTokens,
     limitTokens,

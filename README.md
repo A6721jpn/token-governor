@@ -24,6 +24,11 @@ node bin/token-governor.js complete LIN-123 --tokens 18000
 
 By default, state is stored at `.token-governor/state.json` under the current working directory. Run the CLI from the project repository you are governing.
 
+A first `snapshot` is recommended but not required. If no budget snapshot exists yet, `check` starts with built-in bootstrap windows so a new project does not stop at `remainingTokens: 0`:
+
+- `fiveHour`: 200000 token limit, 90% cap, reset at now + 5 hours.
+- `weekly`: 1000000 token limit, 95% cap, reset at now + 7 days.
+
 If the CLI is launched from another directory, pass the governed project explicitly:
 
 ```sh
@@ -75,6 +80,7 @@ node bin/token-governor.js snapshot --remaining 120000 --limit 200000 --reserve 
 - Use the last 10 completed issues.
 - Predict the next issue with the p75 token usage from that history.
 - If there is no completion history, use `coldStartTokens`. The default is `60000`.
+- If no budget snapshot exists, bootstrap default 5-hour and weekly windows until a real snapshot is recorded.
 - For each configured budget window, compute `usedTokens = limitTokens - remainingTokens`.
 - Compute window usable budget as `floor(limitTokens * maxUsageRatio) - usedTokens`.
 - Hold when the predicted next issue would cross any configured window cap.

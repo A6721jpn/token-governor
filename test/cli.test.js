@@ -230,6 +230,21 @@ test('check uses the default cold-start prediction when there is no completion h
   assert.equal(result.json.predictionSource, 'cold_start');
 });
 
+test('check --wait allows a cold start when no budget snapshot exists', () => {
+  const statePath = tempStatePath();
+  run(['init'], statePath);
+
+  const result = run(['check', 'PK6-140', '--wait', '--max-wait-seconds', '14400'], statePath);
+
+  assert.equal(result.status, 0);
+  assert.equal(result.json.status, 'ALLOW');
+  assert.equal(result.json.issueId, 'PK6-140');
+  assert.equal(result.json.predictedTokens, 60000);
+  assert.equal(result.json.predictionSource, 'cold_start');
+  assert.equal(result.json.budgetSource, 'default_unconfigured');
+  assert.equal(result.json.usableBudget, 180000);
+});
+
 test('check --wait holds instead of sleeping past max wait', () => {
   const statePath = tempStatePath();
   run(['init'], statePath);
