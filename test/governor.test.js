@@ -5,6 +5,7 @@ import {
   appendCompletion,
   decideCheck,
   initialState,
+  planWait,
   predictTokens,
   updateSnapshot
 } from '../src/governor.js';
@@ -28,6 +29,7 @@ test('decideCheck allows an issue when usable budget covers predicted usage', ()
     ...initialState(),
     budget: {
       remainingTokens: 1_000,
+      limitTokens: null,
       reserveTokens: 100,
       resetAt: '2026-06-27T12:00:00.000Z',
       updatedAt: '2026-06-27T00:00:00.000Z'
@@ -47,6 +49,7 @@ test('decideCheck allows an issue when usable budget covers predicted usage', ()
     predictedTokens: 500,
     usableBudget: 900,
     remainingTokens: 1_000,
+    limitTokens: null,
     reserveTokens: 100,
     resetAt: '2026-06-27T12:00:00.000Z'
   });
@@ -57,6 +60,7 @@ test('decideCheck holds an issue when usable budget does not cover predicted usa
     ...initialState(),
     budget: {
       remainingTokens: 550,
+      limitTokens: null,
       reserveTokens: 100,
       resetAt: '2026-06-27T12:00:00.000Z',
       updatedAt: '2026-06-27T00:00:00.000Z'
@@ -76,6 +80,7 @@ test('decideCheck holds an issue when usable budget does not cover predicted usa
     predictedTokens: 500,
     usableBudget: 450,
     remainingTokens: 550,
+    limitTokens: null,
     reserveTokens: 100,
     resetAt: '2026-06-27T12:00:00.000Z',
     reason: 'budget_insufficient'
@@ -87,6 +92,7 @@ test('decideCheck returns UNKNOWN when there is no completion history', () => {
     ...initialState(),
     budget: {
       remainingTokens: 1_000,
+      limitTokens: null,
       reserveTokens: 100,
       resetAt: '2026-06-27T12:00:00.000Z',
       updatedAt: '2026-06-27T00:00:00.000Z'
@@ -104,6 +110,7 @@ test('decideCheck returns UNKNOWN when there is no completion history', () => {
 test('updateSnapshot stores the current token budget', () => {
   const state = updateSnapshot(initialState(), {
     remainingTokens: 12_345,
+    limitTokens: 20_000,
     reserveTokens: 1_000,
     resetAt: '2026-06-27T12:00:00.000Z',
     now: '2026-06-27T01:00:00.000Z'
@@ -111,10 +118,70 @@ test('updateSnapshot stores the current token budget', () => {
 
   assert.deepEqual(state.budget, {
     remainingTokens: 12_345,
+    limitTokens: 20_000,
     reserveTokens: 1_000,
     resetAt: '2026-06-27T12:00:00.000Z',
     updatedAt: '2026-06-27T01:00:00.000Z'
   });
+});
+
+test('decideCheck uses limitTokens after the reset time has passed', () => {
+  const state = {
+    ...initialState(),
+    budget: {
+      remainingTokens: 100,
+      limitTokens: 1_000,
+      reserveTokens: 100,
+      resetAt: '2026-06-27T12:00:00.000Z',
+      updatedAt: '2026-06-27T00:00:00.000Z'
+    },
+    history: [
+      { issueId: 'PK6-1', tokens: 300, completedAt: '2026-06-27T00:00:00.000Z' },
+      { issueId: 'PK6-2', tokens: 400, completedAt: '2026-06-27T01:00:00.000Z' },
+      { issueId: 'PK6-3', tokens: 500, completedAt: '2026-06-27T02:00:00.000Z' },
+      { issueId: 'PK6-4', tokens: 600, completedAt: '2026-06-27T03:00:00.000Z' }
+    ]
+  };
+
+  assert.equal(
+    decideCheck(state, 'PK6-5', { now: '2026-06-27T12:00:01.000Z' }).status,
+    'ALLOW'
+  );
+});
+
+test('planWait waits quietly until reset time plus buffer', () => {
+  const plan = planWait(
+    {
+      status: 'HOLD',
+      resetAt: '2026-06-27T12:00:00.000Z'
+    },
+    {
+      now: '2026-06-27T11:59:00.000Z',
+      bufferSeconds: 5
+    }
+  );
+
+  assert.deepEqual(plan, {
+    shouldWait: true,
+    waitUntil: '2026-06-27T12:00:05.000Z',
+    waitMs: 65_000
+  });
+});
+
+test('planWait refuses waits beyond maxWaitSeconds', () => {
+  const plan = planWait(
+    {
+      status: 'HOLD',
+      resetAt: '2026-06-27T12:00:00.000Z'
+    },
+    {
+      now: '2026-06-27T11:00:00.000Z',
+      maxWaitSeconds: 60
+    }
+  );
+
+  assert.equal(plan.shouldWait, false);
+  assert.equal(plan.reason, 'max_wait_exceeded');
 });
 
 test('appendCompletion records completed issues and decrements known remaining tokens', () => {
@@ -139,4 +206,22 @@ test('appendCompletion records completed issues and decrements known remaining t
       completedAt: '2026-06-27T02:00:00.000Z'
     }
   ]);
+});
+
+test('appendCompletion decrements from limitTokens after reset time has passed', () => {
+  const state = updateSnapshot(initialState(), {
+    remainingTokens: 100,
+    limitTokens: 1_000,
+    reserveTokens: 100,
+    resetAt: '2026-06-27T12:00:00.000Z',
+    now: '2026-06-27T01:00:00.000Z'
+  });
+
+  const updated = appendCompletion(state, {
+    issueId: 'PK6-1',
+    tokens: 300,
+    completedAt: '2026-06-27T12:01:00.000Z'
+  });
+
+  assert.equal(updated.budget.remainingTokens, 700);
 });

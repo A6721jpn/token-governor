@@ -14,8 +14,9 @@ Run from a project repository:
 
 ```sh
 node bin/token-governor.js init
-node bin/token-governor.js snapshot --remaining 120000 --reserve 20000 --reset-at 2026-06-28T00:00:00.000Z
+node bin/token-governor.js snapshot --remaining 120000 --limit 200000 --reserve 20000 --reset-at 2026-06-28T00:00:00.000Z
 node bin/token-governor.js check LIN-123
+node bin/token-governor.js check LIN-123 --wait
 node bin/token-governor.js complete LIN-123 --tokens 18000
 ```
 
@@ -38,12 +39,20 @@ TOKEN_GOVERNOR_STATE=/path/to/state.json node bin/token-governor.js check LIN-12
 5. If the result is `UNKNOWN`, add completion history or stop until a human sets the policy.
 6. After finishing an issue, record actual usage with `complete`.
 
+Use `check <issue-id> --wait` when Codex should park before the limit is exhausted. The CLI sleeps silently until `resetAt` plus a small buffer, then checks the same issue again. To make that deterministic, provide `--limit` in `snapshot`; after `resetAt`, `limitTokens` becomes the effective remaining budget.
+
 ## Decision Rule
 
 - Use the last 10 completed issues.
 - Predict the next issue with the p75 token usage from that history.
 - Compute usable budget as `remainingTokens - reserveTokens`.
+- After `resetAt`, use `limitTokens - reserveTokens` when `--limit` was recorded.
 - Allow work only when usable budget covers predicted usage.
+
+`check --wait` also accepts:
+
+- `--buffer-seconds <seconds>`: extra time after `resetAt` before resuming. Defaults to `30`.
+- `--max-wait-seconds <seconds>`: refuse long waits and return `HOLD` instead.
 
 ## Exit Codes
 

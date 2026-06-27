@@ -3,6 +3,7 @@ export function initialState() {
     version: 1,
     budget: {
       remainingTokens: null,
+      limitTokens: null,
       reserveTokens: 0,
       resetAt: null,
       updatedAt: null
@@ -26,7 +27,36 @@ export function predictTokens(history, sampleSize = 10) {
   return recent[index];
 }
 
-export function decideCheck(state, issueId) {
+function hasResetReached(resetAt, now) {
+  if (!resetAt) {
+    return false;
+  }
+
+  const resetTime = Date.parse(resetAt);
+  const nowTime = Date.parse(now);
+  return Number.isFinite(resetTime) && Number.isFinite(nowTime) && nowTime >= resetTime;
+}
+
+function normalizeBudget(budget) {
+  return {
+    ...initialState().budget,
+    ...(budget ?? {})
+  };
+}
+
+function effectiveRemainingTokens(budget, now) {
+  const normalized = normalizeBudget(budget);
+  const limitTokens = normalized.limitTokens ?? null;
+  if (limitTokens !== null && hasResetReached(normalized.resetAt, now)) {
+    return Number(limitTokens);
+  }
+
+  return normalized.remainingTokens === null
+    ? null
+    : Number(normalized.remainingTokens);
+}
+
+export function decideCheck(state, issueId, { now = new Date().toISOString() } = {}) {
   const predictedTokens = predictTokens(state.history ?? []);
 
   if (predictedTokens === null) {
@@ -38,8 +68,9 @@ export function decideCheck(state, issueId) {
     };
   }
 
-  const budget = state.budget ?? initialState().budget;
-  const remainingTokens = Number(budget.remainingTokens ?? 0);
+  const budget = normalizeBudget(state.budget);
+  const limitTokens = budget.limitTokens ?? null;
+  const remainingTokens = effectiveRemainingTokens(budget, now) ?? 0;
   const reserveTokens = Number(budget.reserveTokens ?? 0);
   const usableBudget = remainingTokens - reserveTokens;
   const base = {
@@ -49,6 +80,7 @@ export function decideCheck(state, issueId) {
     predictedTokens,
     usableBudget,
     remainingTokens,
+    limitTokens,
     reserveTokens,
     resetAt: budget.resetAt ?? null
   };
@@ -63,11 +95,48 @@ export function decideCheck(state, issueId) {
   return base;
 }
 
+export function planWait(
+  decision,
+  { now = new Date().toISOString(), bufferSeconds = 30, maxWaitSeconds = null } = {}
+) {
+  if (decision.status !== 'HOLD') {
+    return { shouldWait: false, reason: 'not_hold' };
+  }
+
+  if (!decision.resetAt) {
+    return { shouldWait: false, reason: 'missing_reset_at' };
+  }
+
+  const resetTime = Date.parse(decision.resetAt);
+  const nowTime = Date.parse(now);
+  if (!Number.isFinite(resetTime) || !Number.isFinite(nowTime)) {
+    return { shouldWait: false, reason: 'invalid_time' };
+  }
+
+  const waitUntilTime = resetTime + bufferSeconds * 1000;
+  const waitMs = Math.max(0, waitUntilTime - nowTime);
+  if (maxWaitSeconds !== null && waitMs > maxWaitSeconds * 1000) {
+    return {
+      shouldWait: false,
+      reason: 'max_wait_exceeded',
+      waitUntil: new Date(waitUntilTime).toISOString(),
+      waitMs
+    };
+  }
+
+  return {
+    shouldWait: true,
+    waitUntil: new Date(waitUntilTime).toISOString(),
+    waitMs
+  };
+}
+
 export function updateSnapshot(state, snapshot) {
   return {
     ...state,
     budget: {
       remainingTokens: snapshot.remainingTokens,
+      limitTokens: snapshot.limitTokens ?? null,
       reserveTokens: snapshot.reserveTokens,
       resetAt: snapshot.resetAt,
       updatedAt: snapshot.now
@@ -76,10 +145,11 @@ export function updateSnapshot(state, snapshot) {
 }
 
 export function appendCompletion(state, completion) {
-  const budget = state.budget ?? initialState().budget;
-  const remainingTokens = budget.remainingTokens === null
+  const budget = normalizeBudget(state.budget);
+  const effectiveRemaining = effectiveRemainingTokens(budget, completion.completedAt);
+  const remainingTokens = effectiveRemaining === null
     ? null
-    : Math.max(0, Number(budget.remainingTokens) - completion.tokens);
+    : Math.max(0, effectiveRemaining - completion.tokens);
 
   return {
     ...state,
