@@ -23,14 +23,14 @@
 ### Task 1: Bootstrap Metadata
 
 - [x] Create this plan document.
-- [ ] Create `package.json`.
-- [ ] Commit and push the initial project metadata.
+- [x] Create `package.json`.
+- [x] Commit and push the initial project metadata.
 
 ### Task 2: Decision Core By TDD
 
-- [ ] Write failing tests for p75 prediction, ALLOW, HOLD, and no-history handling.
-- [ ] Implement `src/governor.js` with pure functions only.
-- [ ] Run `node --test`.
+- [x] Write failing tests for p75 prediction, ALLOW, HOLD, and no-history handling.
+- [x] Implement `src/governor.js` with pure functions only.
+- [x] Run `node --test`.
 - [ ] Commit and push the decision core.
 
 ### Task 3: CLI By TDD
