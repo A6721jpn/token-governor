@@ -1,0 +1,16 @@
+{
+  "name": "token-governor",
+  "version": "0.1.0",
+  "description": "Deterministic token-budget gate for Codex app workflows with Linear issue selection.",
+  "type": "module",
+  "bin": {
+    "token-governor": "bin/token-governor.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
