@@ -173,6 +173,34 @@ test('refresh records budget windows from a usage JSON file', () => {
   assert.equal(result.json.budget.windows.weekly.maxUsageRatio, 0.95);
 });
 
+test('refresh records budget windows from Codex CLI status output', () => {
+  const statePath = tempStatePath();
+  const statusPath = join(mkdtempSync(join(tmpdir(), 'token-governor-status-')), 'status.txt');
+  writeFileSync(statusPath, [
+    '5h limit:     [xxxxxxxxxxxxxxxxx---] 87% left (resets 03:02)',
+    'Weekly limit: [xxxxxxxxxxxxxxxx----] 82% left (resets 14:23 on 4 Jul)',
+    'GPT-5.3-Codex-Spark limit:',
+    '5h limit:     [xxxxxxxxxxxxxxxxxxxx] 100% left (resets 05:10)',
+    'Weekly limit: [xxxxxxxxxxxxxxxxxxxx] 100% left (resets 00:10 on 5 Jul)'
+  ].join('\n'));
+
+  const result = run([
+    'refresh',
+    '--codex-status',
+    '--codex-status-file',
+    statusPath
+  ], statePath, {
+    TOKEN_GOVERNOR_NOW: '2026-06-28T01:00:00.000+09:00'
+  });
+
+  assert.equal(result.status, 0);
+  assert.equal(result.json.status, 'OK');
+  assert.equal(result.json.budget.windows.fiveHour.remainingTokens, 174_000);
+  assert.equal(result.json.budget.windows.fiveHour.resetAt, '2026-06-27T18:02:00.000Z');
+  assert.equal(result.json.budget.windows.weekly.remainingTokens, 820_000);
+  assert.equal(result.json.budget.windows.weekly.resetAt, '2026-07-04T05:23:00.000Z');
+});
+
 test('check --refresh uses the latest usage command output before deciding', () => {
   const statePath = tempStatePath();
   const usage = JSON.stringify({

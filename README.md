@@ -14,10 +14,8 @@ Run from a project repository:
 
 ```sh
 node bin/token-governor.js init
-node bin/token-governor.js snapshot \
-  --5h-remaining 150000 --5h-limit 200000 --5h-reset-at 2026-06-27T05:00:00.000Z \
-  --weekly-remaining 950000 --weekly-limit 1000000 --weekly-reset-at 2026-07-04T00:00:00.000Z
-node bin/token-governor.js check LIN-123
+node bin/token-governor.js codex-status
+node bin/token-governor.js check LIN-123 --refresh --codex-status
 node bin/token-governor.js refresh --usage-file usage.json
 node bin/token-governor.js check LIN-123 --refresh --usage-command "node scripts/codex-usage.js"
 node bin/token-governor.js check LIN-123 --wait
@@ -52,14 +50,28 @@ TOKEN_GOVERNOR_STATE=/path/to/state.json node bin/token-governor.js check LIN-12
 Use `refresh` to record the latest token budget before a check:
 
 ```sh
+node bin/token-governor.js refresh --codex-status
 node bin/token-governor.js refresh --usage-file usage.json
 node bin/token-governor.js refresh --usage-command "node scripts/codex-usage.js"
 ```
 
-Use `check --refresh` in normal Codex workflows. It refreshes usage before deciding, and if `--wait` sleeps until a reset, it refreshes again before the retry:
+Use `check --refresh --codex-status` in normal Codex workflows. It starts Codex CLI in a PTY, sends `/status`, parses the 5-hour and weekly reset windows, refreshes state, and then decides. If `--wait` sleeps until a reset, it refreshes again before the retry:
 
 ```sh
-node bin/token-governor.js check LIN-123 --refresh --usage-command "node scripts/codex-usage.js" --wait --max-wait-seconds 14400
+node bin/token-governor.js check LIN-123 --refresh --codex-status --wait --max-wait-seconds 14400
+```
+
+`codex-status` prints only the parsed usage snapshot:
+
+```sh
+node bin/token-governor.js codex-status
+```
+
+The parser reads the primary Codex model windows from output like:
+
+```text
+5h limit:     [█████████████████░░░] 87% left (resets 03:02)
+Weekly limit: [████████████████░░░░] 82% left (resets 14:23 on 4 Jul)
 ```
 
 The usage provider must print JSON:
@@ -81,12 +93,12 @@ The usage provider must print JSON:
 }
 ```
 
-`TOKEN_GOVERNOR_USAGE_FILE` and `TOKEN_GOVERNOR_USAGE_COMMAND` can set the provider without repeating flags. At the moment, token-governor does not scrape the Codex app UI. Point `--usage-command` at any stable local command that prints this JSON. When Codex exposes a stable machine-readable usage command, plug it in here.
+`TOKEN_GOVERNOR_CODEX_STATUS=1` enables Codex CLI `/status` refresh without repeating `--codex-status`. `TOKEN_GOVERNOR_USAGE_FILE` and `TOKEN_GOVERNOR_USAGE_COMMAND` can set custom JSON providers when you do not want to launch Codex CLI.
 
 ## Codex App Workflow
 
 1. Let Codex and the Linear plugin select the next issue.
-2. Run `token-governor check <issue-id> --refresh` before starting implementation.
+2. Run `token-governor check <issue-id> --refresh --codex-status` before starting implementation.
 3. If the result is `ALLOW`, start the selected issue.
 4. If the result is `HOLD`, stop and wait for the Codex rate-limit reset. Do not search for another issue.
 5. If the result is `UNKNOWN`, fix the missing or malformed state, then retry.

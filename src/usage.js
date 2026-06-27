@@ -1,5 +1,10 @@
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import {
+  captureCodexStatusText,
+  DEFAULT_CODEX_STATUS_LIMITS,
+  parseCodexStatusSnapshot
+} from './codex-status.js';
 
 function numberField(value, label, { required = true } = {}) {
   if (value === undefined || value === null) {
@@ -139,7 +144,43 @@ export function parseUsageSnapshot(raw, { now }) {
   return snapshot;
 }
 
-export function readUsageSnapshot({ usageFile = null, usageCommand = null, now }) {
+function codexStatusSnapshot(text, { now, limits }) {
+  return parseUsageSnapshot({
+    ...parseCodexStatusSnapshot(text, { now, limits }),
+    now
+  }, { now });
+}
+
+export async function readUsageSnapshot({
+  usageFile = null,
+  usageCommand = null,
+  codexStatus = false,
+  codexStatusFile = null,
+  codexCommand = 'codex',
+  codexCwd = process.cwd(),
+  codexStatusTimeoutMs = 60_000,
+  codexStatusLimits = DEFAULT_CODEX_STATUS_LIMITS,
+  now
+}) {
+  if (codexStatusFile) {
+    return codexStatusSnapshot(readFileSync(codexStatusFile, 'utf8'), {
+      now,
+      limits: codexStatusLimits
+    });
+  }
+
+  if (codexStatus) {
+    const output = await captureCodexStatusText({
+      codexCommand,
+      cwd: codexCwd,
+      timeoutMs: codexStatusTimeoutMs
+    });
+    return codexStatusSnapshot(output, {
+      now,
+      limits: codexStatusLimits
+    });
+  }
+
   if (usageFile) {
     return parseUsageSnapshot(readFileSync(usageFile, 'utf8'), { now });
   }
@@ -153,6 +194,6 @@ export function readUsageSnapshot({ usageFile = null, usageCommand = null, now }
   }
 
   throw new Error(
-    'Missing usage provider. Use --usage-file, --usage-command, TOKEN_GOVERNOR_USAGE_FILE, or TOKEN_GOVERNOR_USAGE_COMMAND.'
+    'Missing usage provider. Use --codex-status, --usage-file, --usage-command, TOKEN_GOVERNOR_CODEX_STATUS, TOKEN_GOVERNOR_USAGE_FILE, or TOKEN_GOVERNOR_USAGE_COMMAND.'
   );
 }

@@ -8,6 +8,7 @@ import {
   planWait,
   updateSnapshot
 } from '../src/governor.js';
+import { DEFAULT_CODEX_STATUS_LIMITS } from '../src/codex-status.js';
 import { readUsageSnapshot } from '../src/usage.js';
 
 const EXIT_INVALID = 20;
@@ -103,8 +104,40 @@ function hasOption(args, name) {
   return args.includes(name);
 }
 
-function usageProviderOptions(args) {
+function envFlag(name) {
+  return ['1', 'true', 'yes'].includes(String(process.env[name] ?? '').toLowerCase());
+}
+
+function usageProviderOptions(args, projectDir) {
   return {
+    codexStatus: hasFlag(args, '--codex-status') || envFlag('TOKEN_GOVERNOR_CODEX_STATUS'),
+    codexStatusFile: option(args, '--codex-status-file', {
+      fallback: process.env.TOKEN_GOVERNOR_CODEX_STATUS_FILE ?? null
+    }),
+    codexCommand: option(args, '--codex-command', {
+      fallback: process.env.TOKEN_GOVERNOR_CODEX_COMMAND ?? 'codex'
+    }),
+    codexCwd: projectDir,
+    codexStatusTimeoutMs: tokenCount(
+      option(args, '--codex-status-timeout-ms', {
+        fallback: process.env.TOKEN_GOVERNOR_CODEX_STATUS_TIMEOUT_MS ?? '60000'
+      }),
+      '--codex-status-timeout-ms'
+    ),
+    codexStatusLimits: {
+      fiveHour: tokenCount(
+        option(args, '--codex-5h-limit', {
+          fallback: process.env.TOKEN_GOVERNOR_CODEX_5H_LIMIT ?? String(DEFAULT_CODEX_STATUS_LIMITS.fiveHour)
+        }),
+        '--codex-5h-limit'
+      ),
+      weekly: tokenCount(
+        option(args, '--codex-weekly-limit', {
+          fallback: process.env.TOKEN_GOVERNOR_CODEX_WEEKLY_LIMIT ?? String(DEFAULT_CODEX_STATUS_LIMITS.weekly)
+        }),
+        '--codex-weekly-limit'
+      )
+    },
     usageFile: option(args, '--usage-file', {
       fallback: process.env.TOKEN_GOVERNOR_USAGE_FILE ?? null
     }),
@@ -114,9 +147,9 @@ function usageProviderOptions(args) {
   };
 }
 
-function refreshState(path, args) {
-  const snapshot = readUsageSnapshot({
-    ...usageProviderOptions(args),
+async function refreshState(path, args, projectDir) {
+  const snapshot = await readUsageSnapshot({
+    ...usageProviderOptions(args, projectDir),
     now: nowIso()
   });
   const state = updateSnapshot(readState(path), snapshot);
@@ -233,7 +266,7 @@ async function run(argv) {
   }
 
   if (command === 'refresh') {
-    const state = refreshState(path, args);
+    const state = await refreshState(path, args, projectDir);
     return {
       exitCode: 0,
       body: {
@@ -245,6 +278,20 @@ async function run(argv) {
     };
   }
 
+  if (command === 'codex-status') {
+    const snapshot = await readUsageSnapshot({
+      ...usageProviderOptions(['--codex-status', ...args], projectDir),
+      now: nowIso()
+    });
+    return {
+      exitCode: 0,
+      body: {
+        status: 'OK',
+        snapshot
+      }
+    };
+  }
+
   if (command === 'check') {
     const issueId = args[0];
     if (!issueId) {
@@ -252,7 +299,7 @@ async function run(argv) {
     }
 
     const refreshed = hasFlag(args, '--refresh');
-    const result = decideCheck(refreshed ? refreshState(path, args) : readState(path), issueId, { now: nowIso() });
+    const result = decideCheck(refreshed ? await refreshState(path, args, projectDir) : readState(path), issueId, { now: nowIso() });
     const body = refreshed ? { ...result, budgetSource: 'refreshed' } : result;
     if (!hasFlag(args, '--wait') || result.status !== 'HOLD') {
       return { exitCode: result.exitCode, body };
@@ -270,7 +317,7 @@ async function run(argv) {
     }
 
     await sleep(wait.waitMs);
-    const finalResult = decideCheck(refreshed ? refreshState(path, args) : readState(path), issueId, { now: nowIso() });
+    const finalResult = decideCheck(refreshed ? await refreshState(path, args, projectDir) : readState(path), issueId, { now: nowIso() });
     return {
       exitCode: finalResult.exitCode,
       body: {
