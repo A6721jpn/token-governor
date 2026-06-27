@@ -27,6 +27,11 @@ export function predictTokens(history, sampleSize = 10) {
   return recent[index];
 }
 
+const DEFAULT_WINDOW_USAGE_RATIOS = {
+  fiveHour: 0.9,
+  weekly: 0.95
+};
+
 function hasResetReached(resetAt, now) {
   if (!resetAt) {
     return false;
@@ -44,6 +49,27 @@ function normalizeBudget(budget) {
   };
 }
 
+function hasBudgetWindows(budget) {
+  const windows = budget?.windows;
+  return Boolean(windows) && Object.keys(windows).length > 0;
+}
+
+function normalizeWindow(name, window) {
+  return {
+    remainingTokens: window.remainingTokens ?? null,
+    limitTokens: window.limitTokens ?? null,
+    reserveTokens: Number(window.reserveTokens ?? 0),
+    maxUsageRatio: Number(window.maxUsageRatio ?? DEFAULT_WINDOW_USAGE_RATIOS[name] ?? 1),
+    resetAt: window.resetAt ?? null
+  };
+}
+
+function normalizeWindows(windows) {
+  return Object.fromEntries(
+    Object.entries(windows ?? {}).map(([name, window]) => [name, normalizeWindow(name, window)])
+  );
+}
+
 function effectiveRemainingTokens(budget, now) {
   const normalized = normalizeBudget(budget);
   const limitTokens = normalized.limitTokens ?? null;
@@ -54,6 +80,52 @@ function effectiveRemainingTokens(budget, now) {
   return normalized.remainingTokens === null
     ? null
     : Number(normalized.remainingTokens);
+}
+
+function effectiveWindowRemainingTokens(window, now) {
+  const limitTokens = window.limitTokens ?? null;
+  if (limitTokens !== null && hasResetReached(window.resetAt, now)) {
+    return Number(limitTokens);
+  }
+
+  return window.remainingTokens === null
+    ? null
+    : Number(window.remainingTokens);
+}
+
+function windowStatus(name, window, now) {
+  const normalized = normalizeWindow(name, window);
+  const remainingTokens = effectiveWindowRemainingTokens(normalized, now) ?? 0;
+  const limitTokens = normalized.limitTokens ?? null;
+  const reserveTokens = Number(normalized.reserveTokens ?? 0);
+  const maxUsageRatio = Number(normalized.maxUsageRatio ?? 1);
+  const usableBudget = limitTokens === null
+    ? remainingTokens - reserveTokens
+    : Math.floor(Number(limitTokens) * maxUsageRatio)
+      - (Number(limitTokens) - remainingTokens)
+      - reserveTokens;
+
+  return {
+    name,
+    remainingTokens,
+    limitTokens,
+    reserveTokens,
+    maxUsageRatio,
+    usableBudget,
+    resetAt: normalized.resetAt
+  };
+}
+
+function latestResetAt(windows) {
+  const validTimes = windows
+    .map((window) => Date.parse(window.resetAt))
+    .filter(Number.isFinite);
+
+  if (validTimes.length === 0) {
+    return null;
+  }
+
+  return new Date(Math.max(...validTimes)).toISOString();
 }
 
 export function decideCheck(state, issueId, { now = new Date().toISOString() } = {}) {
@@ -69,6 +141,33 @@ export function decideCheck(state, issueId, { now = new Date().toISOString() } =
   }
 
   const budget = normalizeBudget(state.budget);
+  if (hasBudgetWindows(budget)) {
+    const windows = Object.entries(normalizeWindows(budget.windows)).map(([name, window]) => (
+      windowStatus(name, window, now)
+    ));
+    const usableBudget = Math.min(...windows.map((window) => window.usableBudget));
+    const blocking = windows.filter((window) => window.usableBudget < predictedTokens);
+    const base = {
+      status: blocking.length === 0 ? 'ALLOW' : 'HOLD',
+      exitCode: blocking.length === 0 ? 0 : 10,
+      issueId,
+      predictedTokens,
+      usableBudget,
+      windows,
+      blockingWindows: blocking.map((window) => window.name),
+      resetAt: blocking.length === 0 ? null : latestResetAt(blocking)
+    };
+
+    if (base.status === 'HOLD') {
+      return {
+        ...base,
+        reason: 'budget_insufficient'
+      };
+    }
+
+    return base;
+  }
+
   const limitTokens = budget.limitTokens ?? null;
   const remainingTokens = effectiveRemainingTokens(budget, now) ?? 0;
   const reserveTokens = Number(budget.reserveTokens ?? 0);
@@ -132,6 +231,16 @@ export function planWait(
 }
 
 export function updateSnapshot(state, snapshot) {
+  if (snapshot.windows) {
+    return {
+      ...state,
+      budget: {
+        windows: normalizeWindows(snapshot.windows),
+        updatedAt: snapshot.now
+      }
+    };
+  }
+
   return {
     ...state,
     budget: {
@@ -146,6 +255,41 @@ export function updateSnapshot(state, snapshot) {
 
 export function appendCompletion(state, completion) {
   const budget = normalizeBudget(state.budget);
+  if (hasBudgetWindows(budget)) {
+    const windows = Object.fromEntries(
+      Object.entries(normalizeWindows(budget.windows)).map(([name, window]) => {
+        const effectiveRemaining = effectiveWindowRemainingTokens(window, completion.completedAt);
+        const remainingTokens = effectiveRemaining === null
+          ? null
+          : Math.max(0, effectiveRemaining - completion.tokens);
+
+        return [
+          name,
+          {
+            ...window,
+            remainingTokens
+          }
+        ];
+      })
+    );
+
+    return {
+      ...state,
+      budget: {
+        ...budget,
+        windows
+      },
+      history: [
+        ...(state.history ?? []),
+        {
+          issueId: completion.issueId,
+          tokens: completion.tokens,
+          completedAt: completion.completedAt
+        }
+      ]
+    };
+  }
+
   const effectiveRemaining = effectiveRemainingTokens(budget, completion.completedAt);
   const remainingTokens = effectiveRemaining === null
     ? null

@@ -87,6 +87,73 @@ test('decideCheck holds an issue when usable budget does not cover predicted usa
   });
 });
 
+test('decideCheck holds before crossing the five hour usage cap', () => {
+  const state = {
+    ...initialState(),
+    budget: {
+      windows: {
+        fiveHour: {
+          remainingTokens: 150,
+          limitTokens: 1_000,
+          maxUsageRatio: 0.9,
+          resetAt: '2026-06-27T05:00:00.000Z'
+        }
+      },
+      updatedAt: '2026-06-27T00:00:00.000Z'
+    },
+    history: [
+      { issueId: 'PK6-1', tokens: 60, completedAt: '2026-06-27T00:00:00.000Z' },
+      { issueId: 'PK6-2', tokens: 60, completedAt: '2026-06-27T01:00:00.000Z' },
+      { issueId: 'PK6-3', tokens: 60, completedAt: '2026-06-27T02:00:00.000Z' },
+      { issueId: 'PK6-4', tokens: 60, completedAt: '2026-06-27T03:00:00.000Z' }
+    ]
+  };
+
+  const result = decideCheck(state, 'PK6-5', { now: '2026-06-27T04:00:00.000Z' });
+
+  assert.equal(result.status, 'HOLD');
+  assert.equal(result.reason, 'budget_insufficient');
+  assert.equal(result.usableBudget, 50);
+  assert.deepEqual(result.blockingWindows, ['fiveHour']);
+  assert.equal(result.resetAt, '2026-06-27T05:00:00.000Z');
+});
+
+test('decideCheck holds before crossing the weekly usage cap', () => {
+  const state = {
+    ...initialState(),
+    budget: {
+      windows: {
+        fiveHour: {
+          remainingTokens: 800,
+          limitTokens: 1_000,
+          maxUsageRatio: 0.9,
+          resetAt: '2026-06-27T05:00:00.000Z'
+        },
+        weekly: {
+          remainingTokens: 80,
+          limitTokens: 1_000,
+          maxUsageRatio: 0.95,
+          resetAt: '2026-07-04T00:00:00.000Z'
+        }
+      },
+      updatedAt: '2026-06-27T00:00:00.000Z'
+    },
+    history: [
+      { issueId: 'PK6-1', tokens: 60, completedAt: '2026-06-27T00:00:00.000Z' },
+      { issueId: 'PK6-2', tokens: 60, completedAt: '2026-06-27T01:00:00.000Z' },
+      { issueId: 'PK6-3', tokens: 60, completedAt: '2026-06-27T02:00:00.000Z' },
+      { issueId: 'PK6-4', tokens: 60, completedAt: '2026-06-27T03:00:00.000Z' }
+    ]
+  };
+
+  const result = decideCheck(state, 'PK6-5', { now: '2026-06-27T04:00:00.000Z' });
+
+  assert.equal(result.status, 'HOLD');
+  assert.equal(result.usableBudget, 30);
+  assert.deepEqual(result.blockingWindows, ['weekly']);
+  assert.equal(result.resetAt, '2026-07-04T00:00:00.000Z');
+});
+
 test('decideCheck returns UNKNOWN when there is no completion history', () => {
   const state = {
     ...initialState(),
@@ -224,4 +291,33 @@ test('appendCompletion decrements from limitTokens after reset time has passed',
   });
 
   assert.equal(updated.budget.remainingTokens, 700);
+});
+
+test('appendCompletion decrements every configured budget window', () => {
+  const state = updateSnapshot(initialState(), {
+    windows: {
+      fiveHour: {
+        remainingTokens: 900,
+        limitTokens: 1_000,
+        maxUsageRatio: 0.9,
+        resetAt: '2026-06-27T05:00:00.000Z'
+      },
+      weekly: {
+        remainingTokens: 4_000,
+        limitTokens: 5_000,
+        maxUsageRatio: 0.95,
+        resetAt: '2026-07-04T00:00:00.000Z'
+      }
+    },
+    now: '2026-06-27T01:00:00.000Z'
+  });
+
+  const updated = appendCompletion(state, {
+    issueId: 'PK6-1',
+    tokens: 300,
+    completedAt: '2026-06-27T02:00:00.000Z'
+  });
+
+  assert.equal(updated.budget.windows.fiveHour.remainingTokens, 600);
+  assert.equal(updated.budget.windows.weekly.remainingTokens, 3_700);
 });

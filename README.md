@@ -14,7 +14,9 @@ Run from a project repository:
 
 ```sh
 node bin/token-governor.js init
-node bin/token-governor.js snapshot --remaining 120000 --limit 200000 --reserve 20000 --reset-at 2026-06-28T00:00:00.000Z
+node bin/token-governor.js snapshot \
+  --5h-remaining 150000 --5h-limit 200000 --5h-reset-at 2026-06-27T05:00:00.000Z \
+  --weekly-remaining 950000 --weekly-limit 1000000 --weekly-reset-at 2026-07-04T00:00:00.000Z
 node bin/token-governor.js check LIN-123
 node bin/token-governor.js check LIN-123 --wait
 node bin/token-governor.js complete LIN-123 --tokens 18000
@@ -39,13 +41,36 @@ TOKEN_GOVERNOR_STATE=/path/to/state.json node bin/token-governor.js check LIN-12
 5. If the result is `UNKNOWN`, add completion history or stop until a human sets the policy.
 6. After finishing an issue, record actual usage with `complete`.
 
-Use `check <issue-id> --wait` when Codex should park before the limit is exhausted. The CLI sleeps silently until `resetAt` plus a small buffer, then checks the same issue again. To make that deterministic, provide `--limit` in `snapshot`; after `resetAt`, `limitTokens` becomes the effective remaining budget.
+Use `check <issue-id> --wait` when Codex should park before the limit is exhausted. The CLI sleeps silently until the blocking window reset plus a small buffer, then checks the same issue again.
+
+The default usage caps are:
+
+- `fiveHour`: stop before crossing 90% of the 5-hour limit.
+- `weekly`: stop before crossing 95% of the weekly limit.
+
+To override them:
+
+```sh
+node bin/token-governor.js snapshot \
+  --5h-remaining 150000 --5h-limit 200000 --5h-reset-at 2026-06-27T05:00:00.000Z --5h-max-usage-ratio 0.88 \
+  --weekly-remaining 950000 --weekly-limit 1000000 --weekly-reset-at 2026-07-04T00:00:00.000Z --weekly-max-usage-ratio 0.93
+```
+
+The legacy single-budget form is still available:
+
+```sh
+node bin/token-governor.js snapshot --remaining 120000 --limit 200000 --reserve 20000 --reset-at 2026-06-28T00:00:00.000Z
+```
 
 ## Decision Rule
 
 - Use the last 10 completed issues.
 - Predict the next issue with the p75 token usage from that history.
-- Compute usable budget as `remainingTokens - reserveTokens`.
+- For each configured budget window, compute `usedTokens = limitTokens - remainingTokens`.
+- Compute window usable budget as `floor(limitTokens * maxUsageRatio) - usedTokens`.
+- Hold when the predicted next issue would cross any configured window cap.
+- Report the blocking windows as `blockingWindows`.
+- With the legacy single-budget form, compute usable budget as `remainingTokens - reserveTokens`.
 - After `resetAt`, use `limitTokens - reserveTokens` when `--limit` was recorded.
 - Allow work only when usable budget covers predicted usage.
 

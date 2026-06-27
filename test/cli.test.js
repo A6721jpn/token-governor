@@ -78,6 +78,30 @@ test('snapshot can record the reset limit for wait mode', () => {
   assert.equal(result.json.budget.limitTokens, 5000);
 });
 
+test('snapshot records five hour and weekly budget windows', () => {
+  const statePath = tempStatePath();
+  run(['init'], statePath);
+  const result = run([
+    'snapshot',
+    '--5h-remaining',
+    '150',
+    '--5h-limit',
+    '1000',
+    '--5h-reset-at',
+    '2026-06-27T05:00:00.000Z',
+    '--weekly-remaining',
+    '4500',
+    '--weekly-limit',
+    '5000',
+    '--weekly-reset-at',
+    '2026-07-04T00:00:00.000Z'
+  ], statePath);
+
+  assert.equal(result.status, 0);
+  assert.equal(result.json.budget.windows.fiveHour.maxUsageRatio, 0.9);
+  assert.equal(result.json.budget.windows.weekly.maxUsageRatio, 0.95);
+});
+
 test('check exits ALLOW when predicted burn fits the usable budget', () => {
   const statePath = tempStatePath();
   run(['init'], statePath);
@@ -108,6 +132,36 @@ test('check exits HOLD when predicted burn exceeds the usable budget', () => {
   assert.equal(result.status, 10);
   assert.equal(result.json.status, 'HOLD');
   assert.equal(result.json.reason, 'budget_insufficient');
+});
+
+test('check exits HOLD when predicted burn would cross a window usage cap', () => {
+  const statePath = tempStatePath();
+  run(['init'], statePath);
+  run(['complete', 'LIN-1', '--tokens', '60'], statePath);
+  run(['complete', 'LIN-2', '--tokens', '60'], statePath);
+  run(['complete', 'LIN-3', '--tokens', '60'], statePath);
+  run(['complete', 'LIN-4', '--tokens', '60'], statePath);
+  run([
+    'snapshot',
+    '--5h-remaining',
+    '150',
+    '--5h-limit',
+    '1000',
+    '--5h-reset-at',
+    '2026-06-27T05:00:00.000Z',
+    '--weekly-remaining',
+    '4500',
+    '--weekly-limit',
+    '5000',
+    '--weekly-reset-at',
+    '2026-07-04T00:00:00.000Z'
+  ], statePath);
+
+  const result = run(['check', 'LIN-5'], statePath);
+
+  assert.equal(result.status, 10);
+  assert.equal(result.json.status, 'HOLD');
+  assert.deepEqual(result.json.blockingWindows, ['fiveHour']);
 });
 
 test('check exits UNKNOWN when there is no completion history', () => {

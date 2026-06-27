@@ -64,8 +64,49 @@ function optionalTokenCount(value, label) {
   return value === null ? null : tokenCount(value, label);
 }
 
+function ratio(value, label) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+    throw new Error(`${label} must be a number greater than 0 and at most 1`);
+  }
+  return parsed;
+}
+
 function hasFlag(args, name) {
   return args.includes(name);
+}
+
+function hasOption(args, name) {
+  return args.includes(name);
+}
+
+function parseWindow(args, prefix, name, defaultMaxUsageRatio) {
+  const optionNames = [
+    `--${prefix}-remaining`,
+    `--${prefix}-limit`,
+    `--${prefix}-reset-at`,
+    `--${prefix}-max-usage-ratio`
+  ];
+
+  if (!optionNames.some((optionName) => hasOption(args, optionName))) {
+    return null;
+  }
+
+  return [
+    name,
+    {
+      remainingTokens: tokenCount(
+        option(args, `--${prefix}-remaining`, { required: true }),
+        `--${prefix}-remaining`
+      ),
+      limitTokens: tokenCount(option(args, `--${prefix}-limit`, { required: true }), `--${prefix}-limit`),
+      maxUsageRatio: ratio(
+        option(args, `--${prefix}-max-usage-ratio`, { fallback: String(defaultMaxUsageRatio) }),
+        `--${prefix}-max-usage-ratio`
+      ),
+      resetAt: option(args, `--${prefix}-reset-at`, { required: true })
+    }
+  ];
 }
 
 function sleep(ms) {
@@ -85,6 +126,21 @@ async function run(argv) {
   }
 
   if (command === 'snapshot') {
+    const windowEntries = [
+      parseWindow(args, '5h', 'fiveHour', 0.9),
+      parseWindow(args, 'weekly', 'weekly', 0.95)
+    ].filter(Boolean);
+
+    if (windowEntries.length > 0) {
+      const state = updateSnapshot(readState(path), {
+        windows: Object.fromEntries(windowEntries),
+        now: nowIso()
+      });
+
+      writeState(path, state);
+      return { exitCode: 0, body: { status: 'OK', statePath: path, budget: state.budget } };
+    }
+
     const remainingTokens = tokenCount(option(args, '--remaining', { required: true }), '--remaining');
     const limitTokens = optionalTokenCount(option(args, '--limit', { fallback: null }), '--limit');
     const reserveTokens = tokenCount(option(args, '--reserve', { fallback: '0' }), '--reserve');
