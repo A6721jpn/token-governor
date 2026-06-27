@@ -35,9 +35,9 @@
 
 ### Task 3: CLI By TDD
 
-- [ ] Write failing CLI tests for `init`, `snapshot`, `check`, and `complete`.
-- [ ] Implement `bin/token-governor.js`.
-- [ ] Run `node --test` and smoke-test local CLI commands.
+- [x] Write failing CLI tests for `init`, `snapshot`, `check`, and `complete`.
+- [x] Implement `bin/token-governor.js`.
+- [x] Run `node --test` and smoke-test local CLI commands.
 - [ ] Commit and push the CLI.
 
 ### Task 4: Minimal Docs
