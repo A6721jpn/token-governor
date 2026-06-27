@@ -31,20 +31,20 @@
 - [x] Write failing tests for p75 prediction, ALLOW, HOLD, and no-history handling.
 - [x] Implement `src/governor.js` with pure functions only.
 - [x] Run `node --test`.
-- [ ] Commit and push the decision core.
+- [x] Commit and push the decision core.
 
 ### Task 3: CLI By TDD
 
 - [x] Write failing CLI tests for `init`, `snapshot`, `check`, and `complete`.
 - [x] Implement `bin/token-governor.js`.
 - [x] Run `node --test` and smoke-test local CLI commands.
-- [ ] Commit and push the CLI.
+- [x] Commit and push the CLI.
 
 ### Task 4: Minimal Docs
 
-- [ ] Write `README.md` with the Codex app workflow and exit codes.
-- [ ] Run final tests.
-- [ ] Commit and push documentation.
+- [x] Write `README.md` with the Codex app workflow and exit codes.
+- [x] Run final tests.
+- [x] Commit and push documentation.
 
 ## MVP Behavior
 
