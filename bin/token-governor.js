@@ -8,6 +8,7 @@ import {
   planWait,
   updateSnapshot
 } from '../src/governor.js';
+import { readUsageSnapshot } from '../src/usage.js';
 
 const EXIT_INVALID = 20;
 
@@ -100,6 +101,27 @@ function hasFlag(args, name) {
 
 function hasOption(args, name) {
   return args.includes(name);
+}
+
+function usageProviderOptions(args) {
+  return {
+    usageFile: option(args, '--usage-file', {
+      fallback: process.env.TOKEN_GOVERNOR_USAGE_FILE ?? null
+    }),
+    usageCommand: option(args, '--usage-command', {
+      fallback: process.env.TOKEN_GOVERNOR_USAGE_COMMAND ?? null
+    })
+  };
+}
+
+function refreshState(path, args) {
+  const snapshot = readUsageSnapshot({
+    ...usageProviderOptions(args),
+    now: nowIso()
+  });
+  const state = updateSnapshot(readState(path), snapshot);
+  writeState(path, state);
+  return state;
 }
 
 function parseWindow(args, prefix, name, defaultMaxUsageRatio) {
@@ -210,15 +232,30 @@ async function run(argv) {
     };
   }
 
+  if (command === 'refresh') {
+    const state = refreshState(path, args);
+    return {
+      exitCode: 0,
+      body: {
+        status: 'OK',
+        statePath: path,
+        budget: state.budget,
+        prediction: state.prediction
+      }
+    };
+  }
+
   if (command === 'check') {
     const issueId = args[0];
     if (!issueId) {
       throw new Error('Missing issue id');
     }
 
-    const result = decideCheck(readState(path), issueId, { now: nowIso() });
+    const refreshed = hasFlag(args, '--refresh');
+    const result = decideCheck(refreshed ? refreshState(path, args) : readState(path), issueId, { now: nowIso() });
+    const body = refreshed ? { ...result, budgetSource: 'refreshed' } : result;
     if (!hasFlag(args, '--wait') || result.status !== 'HOLD') {
-      return { exitCode: result.exitCode, body: result };
+      return { exitCode: result.exitCode, body };
     }
 
     const maxWaitOption = option(args, '--max-wait-seconds', { fallback: null });
@@ -229,12 +266,19 @@ async function run(argv) {
     });
 
     if (!wait.shouldWait) {
-      return { exitCode: result.exitCode, body: { ...result, wait } };
+      return { exitCode: result.exitCode, body: { ...body, wait } };
     }
 
     await sleep(wait.waitMs);
-    const finalResult = decideCheck(readState(path), issueId, { now: nowIso() });
-    return { exitCode: finalResult.exitCode, body: { ...finalResult, wait } };
+    const finalResult = decideCheck(refreshed ? refreshState(path, args) : readState(path), issueId, { now: nowIso() });
+    return {
+      exitCode: finalResult.exitCode,
+      body: {
+        ...finalResult,
+        ...(refreshed ? { budgetSource: 'refreshed' } : {}),
+        wait
+      }
+    };
   }
 
   if (command === 'complete') {

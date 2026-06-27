@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -144,6 +144,68 @@ test('snapshot records five hour and weekly budget windows', () => {
   assert.equal(result.status, 0);
   assert.equal(result.json.budget.windows.fiveHour.maxUsageRatio, 0.9);
   assert.equal(result.json.budget.windows.weekly.maxUsageRatio, 0.95);
+});
+
+test('refresh records budget windows from a usage JSON file', () => {
+  const statePath = tempStatePath();
+  const usagePath = join(mkdtempSync(join(tmpdir(), 'token-governor-usage-')), 'usage.json');
+  writeFileSync(usagePath, JSON.stringify({
+    windows: {
+      fiveHour: {
+        remainingTokens: 70_000,
+        limitTokens: 200_000,
+        resetAt: '2026-06-27T05:00:00.000Z'
+      },
+      weekly: {
+        remainingTokens: 900_000,
+        limitTokens: 1_000_000,
+        resetAt: '2026-07-04T00:00:00.000Z'
+      }
+    }
+  }));
+
+  const result = run(['refresh', '--usage-file', usagePath], statePath);
+
+  assert.equal(result.status, 0);
+  assert.equal(result.json.status, 'OK');
+  assert.equal(result.json.budget.windows.fiveHour.remainingTokens, 70_000);
+  assert.equal(result.json.budget.windows.fiveHour.maxUsageRatio, 0.9);
+  assert.equal(result.json.budget.windows.weekly.maxUsageRatio, 0.95);
+});
+
+test('check --refresh uses the latest usage command output before deciding', () => {
+  const statePath = tempStatePath();
+  const usage = JSON.stringify({
+    windows: {
+      fiveHour: {
+        remainingTokens: 50_000,
+        limitTokens: 200_000,
+        resetAt: '2026-06-27T05:00:00.000Z'
+      },
+      weekly: {
+        remainingTokens: 900_000,
+        limitTokens: 1_000_000,
+        resetAt: '2026-07-04T00:00:00.000Z'
+      }
+    }
+  });
+  run(['init'], statePath);
+
+  const result = run([
+    'check',
+    'LIN-1',
+    '--refresh',
+    '--usage-command',
+    `"${process.execPath}" -e "console.log(process.env.USAGE_JSON)"`
+  ], statePath, {
+    USAGE_JSON: usage
+  });
+
+  assert.equal(result.status, 10);
+  assert.equal(result.json.status, 'HOLD');
+  assert.equal(result.json.predictedTokens, 60_000);
+  assert.equal(result.json.budgetSource, 'refreshed');
+  assert.deepEqual(result.json.blockingWindows, ['fiveHour']);
 });
 
 test('check exits ALLOW when predicted burn fits the usable budget', () => {

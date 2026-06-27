@@ -18,6 +18,8 @@ node bin/token-governor.js snapshot \
   --5h-remaining 150000 --5h-limit 200000 --5h-reset-at 2026-06-27T05:00:00.000Z \
   --weekly-remaining 950000 --weekly-limit 1000000 --weekly-reset-at 2026-07-04T00:00:00.000Z
 node bin/token-governor.js check LIN-123
+node bin/token-governor.js refresh --usage-file usage.json
+node bin/token-governor.js check LIN-123 --refresh --usage-command "node scripts/codex-usage.js"
 node bin/token-governor.js check LIN-123 --wait
 node bin/token-governor.js complete LIN-123 --tokens 18000
 ```
@@ -45,10 +47,46 @@ TOKEN_GOVERNOR_STATE=/path/to/state.json node bin/token-governor.js check LIN-12
 
 `TOKEN_GOVERNOR_STATE` and `CODEX_GOVERNOR_STATE` override the project-local state path. Use them only when you intentionally want a custom state file.
 
+## Usage Refresh
+
+Use `refresh` to record the latest token budget before a check:
+
+```sh
+node bin/token-governor.js refresh --usage-file usage.json
+node bin/token-governor.js refresh --usage-command "node scripts/codex-usage.js"
+```
+
+Use `check --refresh` in normal Codex workflows. It refreshes usage before deciding, and if `--wait` sleeps until a reset, it refreshes again before the retry:
+
+```sh
+node bin/token-governor.js check LIN-123 --refresh --usage-command "node scripts/codex-usage.js" --wait --max-wait-seconds 14400
+```
+
+The usage provider must print JSON:
+
+```json
+{
+  "windows": {
+    "fiveHour": {
+      "remainingTokens": 150000,
+      "limitTokens": 200000,
+      "resetAt": "2026-06-27T05:00:00.000Z"
+    },
+    "weekly": {
+      "remainingTokens": 950000,
+      "limitTokens": 1000000,
+      "resetAt": "2026-07-04T00:00:00.000Z"
+    }
+  }
+}
+```
+
+`TOKEN_GOVERNOR_USAGE_FILE` and `TOKEN_GOVERNOR_USAGE_COMMAND` can set the provider without repeating flags. At the moment, token-governor does not scrape the Codex app UI. Point `--usage-command` at any stable local command that prints this JSON. When Codex exposes a stable machine-readable usage command, plug it in here.
+
 ## Codex App Workflow
 
 1. Let Codex and the Linear plugin select the next issue.
-2. Run `token-governor check <issue-id>` before starting implementation.
+2. Run `token-governor check <issue-id> --refresh` before starting implementation.
 3. If the result is `ALLOW`, start the selected issue.
 4. If the result is `HOLD`, stop and wait for the Codex rate-limit reset. Do not search for another issue.
 5. If the result is `UNKNOWN`, fix the missing or malformed state, then retry.
