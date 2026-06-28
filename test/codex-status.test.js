@@ -2,10 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  codexStatusFailureMessage,
   codexStatusInput,
   parseCodexStatusSnapshot,
+  resolveCodexSpawn,
   shouldAttemptCodexStatus
 } from '../src/codex-status.js';
+
+test('shouldAttemptCodexStatus starts when the bare prompt is visible', () => {
+  assert.equal(shouldAttemptCodexStatus('\n\u203a '), true);
+});
+
+test('codexStatusFailureMessage includes captured output tail', () => {
+  const message = codexStatusFailureMessage(1, '\nfirst line\nlast useful line');
+
+  assert.match(message, /exit 1/);
+  assert.match(message, /last useful line/);
+});
+
+test('resolveCodexSpawn overrides invalid inherited service_tier values', () => {
+  assert.deepEqual(resolveCodexSpawn('custom-codex', {}).args, ['-c', 'service_tier="flex"']);
+});
 
 const STATUS_OUTPUT = `
 /status

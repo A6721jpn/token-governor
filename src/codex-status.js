@@ -25,7 +25,9 @@ export const DEFAULT_CODEX_STATUS_LIMITS = {
 const STATUS_READY_PATTERN = /\b5h\s+limit:.*?\b\d{1,3}%\s+left[\s\S]*?\bWeekly\s+limit:.*?\b\d{1,3}%\s+left/i;
 const TRUST_PROMPT_PATTERN = /Do you trust the contents of this directory\?|Press enter to continue/i;
 const STARTUP_SETTLED_PATTERN = /\bMCP startup (?:complete|incomplete)\b/i;
-const STATUS_TYPED_PATTERN = /(?:^|[\n\r])\s*\u203a\s*\/status\b/i;
+const BARE_PROMPT_PATTERN = /(?:^|[\n\r])\s*(?:\u203a|>)\s*$/i;
+const STATUS_TYPED_PATTERN = /(?:^|[\n\r])\s*(?:\u203a|>)\s*\/status\b/i;
+const CODEX_STATUS_CONFIG_ARGS = ['-c', 'service_tier="flex"'];
 
 function silenceConptyConsoleListAgent(callback) {
   if (process.platform !== 'win32') {
@@ -63,11 +65,21 @@ function tail(value, length = 4000) {
 
 export function shouldAttemptCodexStatus(text) {
   const plainTail = tail(stripTerminalControl(text));
-  return STARTUP_SETTLED_PATTERN.test(plainTail) || STATUS_TYPED_PATTERN.test(plainTail);
+  return (
+    STARTUP_SETTLED_PATTERN.test(plainTail) ||
+    STATUS_TYPED_PATTERN.test(plainTail) ||
+    BARE_PROMPT_PATTERN.test(plainTail)
+  );
 }
 
 export function codexStatusInput(text) {
   return STATUS_TYPED_PATTERN.test(tail(stripTerminalControl(text))) ? '\r' : '/status\r';
+}
+
+export function codexStatusFailureMessage(exitCode, output) {
+  const outputTail = tail(stripTerminalControl(output), 2000).trim();
+  const suffix = outputTail ? `\nCaptured output tail:\n${outputTail}` : '\nCaptured output tail: (empty)';
+  return `Codex CLI exited before /status was captured (exit ${exitCode})${suffix}`;
 }
 
 function defaultWindowsCodexPath(env) {
@@ -92,15 +104,15 @@ function defaultWindowsCodexPath(env) {
   return existsSync(candidate) ? candidate : null;
 }
 
-function resolveCodexSpawn(codexCommand, env) {
+export function resolveCodexSpawn(codexCommand, env) {
   if (codexCommand === 'codex') {
     const windowsNativePath = defaultWindowsCodexPath(env);
     if (windowsNativePath) {
-      return { file: windowsNativePath, args: [] };
+      return { file: windowsNativePath, args: CODEX_STATUS_CONFIG_ARGS };
     }
   }
 
-  return { file: codexCommand, args: [] };
+  return { file: codexCommand, args: CODEX_STATUS_CONFIG_ARGS };
 }
 
 function offsetMinutesFromNow(now) {
@@ -352,7 +364,7 @@ export async function captureCodexStatusText({
       }
 
       if (!hasStatus()) {
-        finish(new Error(`Codex CLI exited before /status was captured (exit ${exitCode})`));
+        finish(new Error(codexStatusFailureMessage(exitCode, output)));
       }
     });
 
