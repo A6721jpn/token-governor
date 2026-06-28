@@ -157,11 +157,12 @@ async function refreshState(path, args, projectDir) {
   return state;
 }
 
-function parseWindow(args, prefix, name, defaultMaxUsageRatio) {
+function parseWindow(args, prefix, name, defaultMinRemainingRatio) {
   const optionNames = [
     `--${prefix}-remaining`,
     `--${prefix}-limit`,
     `--${prefix}-reset-at`,
+    `--${prefix}-min-remaining-ratio`,
     `--${prefix}-max-usage-ratio`
   ];
 
@@ -177,9 +178,13 @@ function parseWindow(args, prefix, name, defaultMaxUsageRatio) {
         `--${prefix}-remaining`
       ),
       limitTokens: tokenCount(option(args, `--${prefix}-limit`, { required: true }), `--${prefix}-limit`),
-      maxUsageRatio: ratio(
-        option(args, `--${prefix}-max-usage-ratio`, { fallback: String(defaultMaxUsageRatio) }),
-        `--${prefix}-max-usage-ratio`
+      minRemainingRatio: ratio(
+        option(args, `--${prefix}-min-remaining-ratio`, {
+          fallback: option(args, `--${prefix}-max-usage-ratio`, { fallback: null }) === null
+            ? String(defaultMinRemainingRatio)
+            : String(1 - ratio(option(args, `--${prefix}-max-usage-ratio`), `--${prefix}-max-usage-ratio`))
+        }),
+        `--${prefix}-min-remaining-ratio`
       ),
       resetAt: option(args, `--${prefix}-reset-at`, { required: true })
     }
@@ -209,8 +214,8 @@ async function run(argv) {
       '--cold-start-tokens'
     );
     const windowEntries = [
-      parseWindow(args, '5h', 'fiveHour', 0.9),
-      parseWindow(args, 'weekly', 'weekly', 0.95)
+      parseWindow(args, '5h', 'fiveHour', 0.2),
+      parseWindow(args, 'weekly', 'weekly', 0.1)
     ].filter(Boolean);
 
     if (windowEntries.length > 0) {
@@ -299,7 +304,11 @@ async function run(argv) {
     }
 
     const refreshed = hasFlag(args, '--refresh');
-    const result = decideCheck(refreshed ? await refreshState(path, args, projectDir) : readState(path), issueId, { now: nowIso() });
+    const kind = option(args, '--kind', { fallback: null });
+    const result = decideCheck(refreshed ? await refreshState(path, args, projectDir) : readState(path), issueId, {
+      now: nowIso(),
+      ...(kind === null ? {} : { kind })
+    });
     const body = refreshed ? { ...result, budgetSource: 'refreshed' } : result;
     if (!hasFlag(args, '--wait') || result.status !== 'HOLD') {
       return { exitCode: result.exitCode, body };
@@ -317,7 +326,10 @@ async function run(argv) {
     }
 
     await sleep(wait.waitMs);
-    const finalResult = decideCheck(refreshed ? await refreshState(path, args, projectDir) : readState(path), issueId, { now: nowIso() });
+    const finalResult = decideCheck(refreshed ? await refreshState(path, args, projectDir) : readState(path), issueId, {
+      now: nowIso(),
+      ...(kind === null ? {} : { kind })
+    });
     return {
       exitCode: finalResult.exitCode,
       body: {
@@ -335,11 +347,30 @@ async function run(argv) {
     }
 
     const tokens = tokenCount(option(args, '--tokens', { required: true }), '--tokens');
+    const kind = option(args, '--kind', { fallback: null });
+    const reviewBundleTokens = optionalTokenCount(
+      option(args, '--review-bundle-tokens', { fallback: null }),
+      '--review-bundle-tokens'
+    );
+    const elapsedMinutes = optionalTokenCount(
+      option(args, '--elapsed-minutes', { fallback: null }),
+      '--elapsed-minutes'
+    );
+    const startedAt = option(args, '--started-at', { fallback: null });
+    const tokensSource = option(args, '--tokens-source', { fallback: null });
     const completedAt = nowIso();
-    const state = appendCompletion(readState(path), {
+    const completion = {
       issueId,
       tokens,
-      completedAt
+      completedAt,
+      ...(kind === null ? {} : { kind }),
+      ...(reviewBundleTokens === null ? {} : { reviewBundleTokens }),
+      ...(elapsedMinutes === null ? {} : { elapsedMinutes }),
+      ...(startedAt === null ? {} : { startedAt }),
+      ...(tokensSource === null ? {} : { tokensSource })
+    };
+    const state = appendCompletion(readState(path), {
+      ...completion
     });
 
     writeState(path, state);
@@ -348,9 +379,7 @@ async function run(argv) {
       body: {
         status: 'OK',
         statePath: path,
-        issueId,
-        tokens,
-        completedAt
+        ...completion
       }
     };
   }

@@ -83,11 +83,18 @@ function normalizeUsageWindow(name, window) {
     valueOf(window, 'maxUsageRatio', 'max_usage_ratio'),
     `windows.${name}.maxUsageRatio`
   );
+  const minRemainingRatio = ratioField(
+    valueOf(window, 'minRemainingRatio', 'min_remaining_ratio'),
+    `windows.${name}.minRemainingRatio`
+  );
 
   if (reserveTokens !== null) {
     normalized.reserveTokens = reserveTokens;
   }
-  if (maxUsageRatio !== undefined) {
+  if (minRemainingRatio !== undefined) {
+    normalized.minRemainingRatio = minRemainingRatio;
+  } else if (maxUsageRatio !== undefined) {
+    normalized.minRemainingRatio = 1 - maxUsageRatio;
     normalized.maxUsageRatio = maxUsageRatio;
   }
 

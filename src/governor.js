@@ -1,4 +1,13 @@
 export const DEFAULT_COLD_START_TOKENS = 60_000;
+export const DEFAULT_PREDICTION_KIND = 'implementation';
+
+const REVIEW_KINDS = new Set([
+  'review',
+  'closure_review',
+  'blocker_review',
+  'post_ticket_review',
+  'design_review'
+]);
 
 export function initialState() {
   return {
@@ -17,24 +26,74 @@ export function initialState() {
   };
 }
 
-export function predictTokens(history, sampleSize = 10) {
-  const recent = [...history]
+function normalizeKind(kind) {
+  if (kind === null || kind === undefined || kind === '') {
+    return null;
+  }
+
+  return String(kind);
+}
+
+function normalizeRequestedKind(kind) {
+  return normalizeKind(kind) ?? DEFAULT_PREDICTION_KIND;
+}
+
+function isReviewKind(kind) {
+  const normalized = normalizeKind(kind);
+  return normalized !== null && (REVIEW_KINDS.has(normalized) || normalized.endsWith('_review'));
+}
+
+function isPredictionEligibleEntry(entry, requestedKind) {
+  const tokens = Number(entry.tokens);
+  if (!Number.isSafeInteger(tokens) || tokens < 0) {
+    return false;
+  }
+
+  if (entry.predictionEligible === false) {
+    return false;
+  }
+
+  if (entry.tokensSource === 'review_bundle') {
+    return false;
+  }
+
+  return !(normalizeRequestedKind(requestedKind) === DEFAULT_PREDICTION_KIND && isReviewKind(entry.kind));
+}
+
+function selectPredictionHistory(history, requestedKind) {
+  const kind = normalizeRequestedKind(requestedKind);
+  const eligible = [...history].filter((entry) => isPredictionEligibleEntry(entry, kind));
+  const sameKind = eligible.filter((entry) => (normalizeKind(entry.kind) ?? DEFAULT_PREDICTION_KIND) === kind);
+
+  return sameKind.length > 0 ? sameKind : eligible;
+}
+
+function sparseUpperMedian(sortedValues) {
+  return sortedValues[Math.floor(sortedValues.length / 2)];
+}
+
+export function predictTokens(history, sampleSize = 10, { kind = DEFAULT_PREDICTION_KIND } = {}) {
+  const recent = selectPredictionHistory(history, kind)
     .sort((a, b) => String(a.completedAt).localeCompare(String(b.completedAt)))
     .slice(-sampleSize)
-    .map((entry) => entry.tokens)
+    .map((entry) => Number(entry.tokens))
     .sort((a, b) => a - b);
 
   if (recent.length === 0) {
     return null;
   }
 
+  if (recent.length < 5) {
+    return sparseUpperMedian(recent);
+  }
+
   const index = Math.ceil(recent.length * 0.75) - 1;
   return recent[index];
 }
 
-const DEFAULT_WINDOW_USAGE_RATIOS = {
-  fiveHour: 0.9,
-  weekly: 0.95
+const DEFAULT_WINDOW_MIN_REMAINING_RATIOS = {
+  fiveHour: 0.2,
+  weekly: 0.1
 };
 
 const DEFAULT_BOOTSTRAP_BUDGET_WINDOWS = {
@@ -77,8 +136,8 @@ function normalizePrediction(prediction) {
   };
 }
 
-function predictForState(state) {
-  const historyPrediction = predictTokens(state.history ?? []);
+function predictForState(state, { kind = DEFAULT_PREDICTION_KIND } = {}) {
+  const historyPrediction = predictTokens(state.history ?? [], 10, { kind });
   if (historyPrediction !== null) {
     return {
       tokens: historyPrediction,
@@ -116,7 +175,7 @@ function defaultBootstrapWindows(now) {
         remainingTokens: config.limitTokens,
         limitTokens: config.limitTokens,
         reserveTokens: 0,
-        maxUsageRatio: DEFAULT_WINDOW_USAGE_RATIOS[name],
+        minRemainingRatio: DEFAULT_WINDOW_MIN_REMAINING_RATIOS[name],
         resetAt: addDuration(now, config.durationMs)
       }
     ])
@@ -137,7 +196,8 @@ function normalizeWindow(name, window) {
     remainingTokens: window.remainingTokens ?? null,
     limitTokens: window.limitTokens ?? null,
     reserveTokens: Number(window.reserveTokens ?? 0),
-    maxUsageRatio: Number(window.maxUsageRatio ?? DEFAULT_WINDOW_USAGE_RATIOS[name] ?? 1),
+    minRemainingRatio: Number(window.minRemainingRatio ?? DEFAULT_WINDOW_MIN_REMAINING_RATIOS[name] ?? 0),
+    ...(window.maxUsageRatio === undefined ? {} : { maxUsageRatio: Number(window.maxUsageRatio) }),
     resetAt: window.resetAt ?? null
   };
 }
@@ -176,19 +236,24 @@ function windowStatus(name, window, now) {
   const remainingTokens = effectiveWindowRemainingTokens(normalized, now) ?? 0;
   const limitTokens = normalized.limitTokens ?? null;
   const reserveTokens = Number(normalized.reserveTokens ?? 0);
-  const maxUsageRatio = Number(normalized.maxUsageRatio ?? 1);
-  const usableBudget = limitTokens === null
+  const minRemainingRatio = Number(normalized.minRemainingRatio ?? 0);
+  const thresholdTokens = limitTokens === null ? null : Math.floor(Number(limitTokens) * minRemainingRatio);
+  const usableBudget = thresholdTokens === null
     ? remainingTokens - reserveTokens
-    : Math.floor(Number(limitTokens) * maxUsageRatio)
-      - (Number(limitTokens) - remainingTokens)
-      - reserveTokens;
+    : remainingTokens - thresholdTokens - reserveTokens;
+  const remainingRatio = limitTokens === null || Number(limitTokens) === 0
+    ? null
+    : remainingTokens / Number(limitTokens);
 
   return {
     name,
     remainingTokens,
     limitTokens,
     reserveTokens,
-    maxUsageRatio,
+    minRemainingRatio,
+    ...(normalized.maxUsageRatio === undefined ? {} : { maxUsageRatio: normalized.maxUsageRatio }),
+    remainingRatio,
+    thresholdTokens,
     usableBudget,
     resetAt: normalized.resetAt
   };
@@ -206,8 +271,8 @@ function latestResetAt(windows) {
   return new Date(Math.max(...validTimes)).toISOString();
 }
 
-export function decideCheck(state, issueId, { now = new Date().toISOString() } = {}) {
-  const prediction = predictForState(state);
+export function decideCheck(state, issueId, { now = new Date().toISOString(), kind = DEFAULT_PREDICTION_KIND } = {}) {
+  const prediction = predictForState(state, { kind });
 
   if (prediction === null) {
     return {
@@ -239,7 +304,9 @@ export function decideCheck(state, issueId, { now = new Date().toISOString() } =
       windowStatus(name, window, now)
     ));
     const usableBudget = Math.min(...windows.map((window) => window.usableBudget));
-    const blocking = windows.filter((window) => window.usableBudget < predictedTokens);
+    const blocking = windows.filter((window) => (
+      window.remainingRatio !== null && window.remainingRatio <= window.minRemainingRatio
+    ));
     const base = {
       status: blocking.length === 0 ? 'ALLOW' : 'HOLD',
       exitCode: blocking.length === 0 ? 0 : 10,
@@ -256,7 +323,7 @@ export function decideCheck(state, issueId, { now = new Date().toISOString() } =
     if (base.status === 'HOLD') {
       return {
         ...base,
-        reason: 'budget_insufficient'
+        reason: 'remaining_threshold_reached'
       };
     }
 
@@ -369,6 +436,31 @@ export function updateSnapshot(state, snapshot) {
 }
 
 export function appendCompletion(state, completion) {
+  const completionTokens = Number(completion.tokens);
+  const historyEntry = {
+    issueId: completion.issueId,
+    tokens: completionTokens,
+    completedAt: completion.completedAt
+  };
+  if (completion.kind !== undefined && completion.kind !== null) {
+    historyEntry.kind = normalizeRequestedKind(completion.kind);
+  }
+  if (completion.reviewBundleTokens !== undefined && completion.reviewBundleTokens !== null) {
+    historyEntry.reviewBundleTokens = Number(completion.reviewBundleTokens);
+  }
+  if (completion.tokensSource !== undefined && completion.tokensSource !== null) {
+    historyEntry.tokensSource = String(completion.tokensSource);
+  }
+  if (completion.elapsedMinutes !== undefined && completion.elapsedMinutes !== null) {
+    historyEntry.elapsedMinutes = Number(completion.elapsedMinutes);
+  }
+  if (completion.startedAt !== undefined && completion.startedAt !== null) {
+    historyEntry.startedAt = completion.startedAt;
+  }
+  if (completion.predictionEligible === false) {
+    historyEntry.predictionEligible = false;
+  }
+
   const budget = normalizeBudget(state.budget);
   if (hasBudgetWindows(budget)) {
     const windows = Object.fromEntries(
@@ -376,7 +468,7 @@ export function appendCompletion(state, completion) {
         const effectiveRemaining = effectiveWindowRemainingTokens(window, completion.completedAt);
         const remainingTokens = effectiveRemaining === null
           ? null
-          : Math.max(0, effectiveRemaining - completion.tokens);
+          : Math.max(0, effectiveRemaining - completionTokens);
 
         return [
           name,
@@ -396,11 +488,7 @@ export function appendCompletion(state, completion) {
       },
       history: [
         ...(state.history ?? []),
-        {
-          issueId: completion.issueId,
-          tokens: completion.tokens,
-          completedAt: completion.completedAt
-        }
+        historyEntry
       ]
     };
   }
@@ -408,7 +496,7 @@ export function appendCompletion(state, completion) {
   const effectiveRemaining = effectiveRemainingTokens(budget, completion.completedAt);
   const remainingTokens = effectiveRemaining === null
     ? null
-    : Math.max(0, effectiveRemaining - completion.tokens);
+    : Math.max(0, effectiveRemaining - completionTokens);
 
   return {
     ...state,
@@ -418,11 +506,7 @@ export function appendCompletion(state, completion) {
     },
     history: [
       ...(state.history ?? []),
-      {
-        issueId: completion.issueId,
-        tokens: completion.tokens,
-        completedAt: completion.completedAt
-      }
+      historyEntry
     ]
   };
 }

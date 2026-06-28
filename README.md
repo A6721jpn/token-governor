@@ -20,14 +20,15 @@ node bin/token-governor.js refresh --usage-file usage.json
 node bin/token-governor.js check LIN-123 --refresh --usage-command "node scripts/codex-usage.js"
 node bin/token-governor.js check LIN-123 --wait
 node bin/token-governor.js complete LIN-123 --tokens 18000
+node bin/token-governor.js complete LIN-123 --tokens 18000 --kind implementation --review-bundle-tokens 178135
 ```
 
 By default, state is stored at `.token-governor/state.json` under the current working directory. Run the CLI from the project repository you are governing.
 
 A first `snapshot` is recommended but not required. If no budget snapshot exists yet, `check` starts with built-in bootstrap windows so a new project does not stop at `remainingTokens: 0`:
 
-- `fiveHour`: 200000 token limit, 90% cap, reset at now + 5 hours.
-- `weekly`: 1000000 token limit, 95% cap, reset at now + 7 days.
+- `fiveHour`: 200000 token limit, stop at 20% remaining, reset at now + 5 hours.
+- `weekly`: 1000000 token limit, stop at 10% remaining, reset at now + 7 days.
 
 If the CLI is launched from another directory, pass the governed project explicitly:
 
@@ -106,17 +107,17 @@ The usage provider must print JSON:
 
 Use `check <issue-id> --wait` when Codex should park before the limit is exhausted. The CLI sleeps silently until the blocking window reset plus a small buffer, then checks the same issue again.
 
-The default usage caps are:
+The default remaining thresholds are:
 
-- `fiveHour`: stop before crossing 90% of the 5-hour limit.
-- `weekly`: stop before crossing 95% of the weekly limit.
+- `fiveHour`: stop when the 5-hour limit has 20% or less remaining.
+- `weekly`: stop when the weekly limit has 10% or less remaining.
 
 To override them:
 
 ```sh
 node bin/token-governor.js snapshot \
-  --5h-remaining 150000 --5h-limit 200000 --5h-reset-at 2026-06-27T05:00:00.000Z --5h-max-usage-ratio 0.88 \
-  --weekly-remaining 950000 --weekly-limit 1000000 --weekly-reset-at 2026-07-04T00:00:00.000Z --weekly-max-usage-ratio 0.93
+  --5h-remaining 150000 --5h-limit 200000 --5h-reset-at 2026-06-27T05:00:00.000Z --5h-min-remaining-ratio 0.2 \
+  --weekly-remaining 950000 --weekly-limit 1000000 --weekly-reset-at 2026-07-04T00:00:00.000Z --weekly-min-remaining-ratio 0.1
 ```
 
 The legacy single-budget form is still available:
@@ -127,17 +128,13 @@ node bin/token-governor.js snapshot --remaining 120000 --limit 200000 --reserve 
 
 ## Decision Rule
 
-- Use the last 10 completed issues.
-- Predict the next issue with the p75 token usage from that history.
-- If there is no completion history, use `coldStartTokens`. The default is `60000`.
 - If no budget snapshot exists, bootstrap default 5-hour and weekly windows until a real snapshot is recorded.
-- For each configured budget window, compute `usedTokens = limitTokens - remainingTokens`.
-- Compute window usable budget as `floor(limitTokens * maxUsageRatio) - usedTokens`.
-- Hold when the predicted next issue would cross any configured window cap.
+- For each configured budget window, compute `remainingRatio = remainingTokens / limitTokens`.
+- Hold when any configured window is at or below its `minRemainingRatio`.
 - Report the blocking windows as `blockingWindows`.
-- With the legacy single-budget form, compute usable budget as `remainingTokens - reserveTokens`.
+- With the legacy single-budget form, compute usable budget as `remainingTokens - reserveTokens` and compare it with the predicted next issue.
 - After `resetAt`, use `limitTokens - reserveTokens` when `--limit` was recorded.
-- Allow work only when usable budget covers predicted usage.
+- Allow work when all configured windows are above their remaining thresholds.
 
 Override the first-issue prediction only when the default is too high or too low for your project:
 
@@ -152,6 +149,14 @@ node bin/token-governor.js snapshot \
 
 - `--buffer-seconds <seconds>`: extra time after `resetAt` before resuming. Defaults to `30`.
 - `--max-wait-seconds <seconds>`: refuse long waits and return `HOLD` instead.
+
+`complete` accepts optional metadata so actual Codex token usage can stay
+separate from external review bundle estimates:
+
+- `--kind <kind>`: label the completed work, for example `implementation` or `review`.
+- `--review-bundle-tokens <tokens>`: record review prompt/bundle size without charging it as actual Codex usage.
+- `--tokens-source <source>`: set to `review_bundle` when a completion record should not drive future predictions.
+- `--started-at <iso-time>` and `--elapsed-minutes <minutes>`: record duration metadata for later analysis.
 
 ## Exit Codes
 

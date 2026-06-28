@@ -142,8 +142,8 @@ test('snapshot records five hour and weekly budget windows', () => {
   ], statePath);
 
   assert.equal(result.status, 0);
-  assert.equal(result.json.budget.windows.fiveHour.maxUsageRatio, 0.9);
-  assert.equal(result.json.budget.windows.weekly.maxUsageRatio, 0.95);
+  assert.equal(result.json.budget.windows.fiveHour.minRemainingRatio, 0.2);
+  assert.equal(result.json.budget.windows.weekly.minRemainingRatio, 0.1);
 });
 
 test('refresh records budget windows from a usage JSON file', () => {
@@ -169,8 +169,8 @@ test('refresh records budget windows from a usage JSON file', () => {
   assert.equal(result.status, 0);
   assert.equal(result.json.status, 'OK');
   assert.equal(result.json.budget.windows.fiveHour.remainingTokens, 70_000);
-  assert.equal(result.json.budget.windows.fiveHour.maxUsageRatio, 0.9);
-  assert.equal(result.json.budget.windows.weekly.maxUsageRatio, 0.95);
+  assert.equal(result.json.budget.windows.fiveHour.minRemainingRatio, 0.2);
+  assert.equal(result.json.budget.windows.weekly.minRemainingRatio, 0.1);
 });
 
 test('refresh records budget windows from Codex CLI status output', () => {
@@ -206,7 +206,7 @@ test('check --refresh uses the latest usage command output before deciding', () 
   const usage = JSON.stringify({
     windows: {
       fiveHour: {
-        remainingTokens: 50_000,
+        remainingTokens: 40_000,
         limitTokens: 200_000,
         resetAt: '2026-06-27T05:00:00.000Z'
       },
@@ -234,6 +234,7 @@ test('check --refresh uses the latest usage command output before deciding', () 
   assert.equal(result.json.predictedTokens, 60_000);
   assert.equal(result.json.budgetSource, 'refreshed');
   assert.deepEqual(result.json.blockingWindows, ['fiveHour']);
+  assert.equal(result.json.reason, 'remaining_threshold_reached');
 });
 
 test('check exits ALLOW when predicted burn fits the usable budget', () => {
@@ -252,6 +253,81 @@ test('check exits ALLOW when predicted burn fits the usable budget', () => {
   assert.equal(result.json.predictedTokens, 500);
 });
 
+test('check uses sparse-history median instead of sparse-history p75 outlier', () => {
+  const statePath = tempStatePath();
+  run(['init'], statePath);
+  run(['complete', 'PK6-140', '--tokens', '80000'], statePath, {
+    TOKEN_GOVERNOR_NOW: '2026-06-27T16:35:42.361Z'
+  });
+  run(['complete', 'PK6-141', '--tokens', '100000'], statePath, {
+    TOKEN_GOVERNOR_NOW: '2026-06-27T17:44:43.699Z'
+  });
+  run(['complete', 'PK6-144', '--tokens', '180000'], statePath, {
+    TOKEN_GOVERNOR_NOW: '2026-06-27T18:39:13.581Z'
+  });
+  run([
+    'snapshot',
+    '--5h-remaining',
+    '182000',
+    '--5h-limit',
+    '200000',
+    '--5h-reset-at',
+    '2026-06-27T23:02:00.000Z',
+    '--weekly-remaining',
+    '750000',
+    '--weekly-limit',
+    '1000000',
+    '--weekly-reset-at',
+    '2026-07-04T05:23:00.000Z'
+  ], statePath);
+
+  const result = run(['check', 'PK6-145'], statePath);
+
+  assert.equal(result.status, 0);
+  assert.equal(result.json.status, 'ALLOW');
+  assert.equal(result.json.predictedTokens, 100000);
+  assert.equal(result.json.usableBudget, 142000);
+});
+
+test('complete records review bundle tokens separately from actual tokens', () => {
+  const statePath = tempStatePath();
+  run(['init'], statePath);
+  run(['snapshot', '--remaining', '10000', '--reserve', '0', '--reset-at', '2026-06-28T00:00:00.000Z'], statePath);
+
+  const result = run([
+    'complete',
+    'PK6-144',
+    '--tokens',
+    '2000',
+    '--kind',
+    'implementation',
+    '--review-bundle-tokens',
+    '180000',
+    '--started-at',
+    '2026-06-26T22:48:00.000Z',
+    '--elapsed-minutes',
+    '72'
+  ], statePath);
+
+  const state = JSON.parse(readFileSync(statePath, 'utf8'));
+
+  assert.equal(result.status, 0);
+  assert.equal(result.json.tokens, 2000);
+  assert.equal(result.json.reviewBundleTokens, 180000);
+  assert.equal(state.budget.remainingTokens, 8000);
+  assert.deepEqual(state.history, [
+    {
+      issueId: 'PK6-144',
+      tokens: 2000,
+      kind: 'implementation',
+      reviewBundleTokens: 180000,
+      elapsedMinutes: 72,
+      startedAt: '2026-06-26T22:48:00.000Z',
+      completedAt: '2026-06-27T00:00:00.000Z'
+    }
+  ]);
+});
+
 test('check exits HOLD when predicted burn exceeds the usable budget', () => {
   const statePath = tempStatePath();
   run(['init'], statePath);
@@ -268,7 +344,7 @@ test('check exits HOLD when predicted burn exceeds the usable budget', () => {
   assert.equal(result.json.reason, 'budget_insufficient');
 });
 
-test('check exits HOLD when predicted burn would cross a window usage cap', () => {
+test('check exits HOLD when a window reaches its remaining threshold', () => {
   const statePath = tempStatePath();
   run(['init'], statePath);
   run(['complete', 'LIN-1', '--tokens', '60'], statePath);
@@ -278,7 +354,7 @@ test('check exits HOLD when predicted burn would cross a window usage cap', () =
   run([
     'snapshot',
     '--5h-remaining',
-    '150',
+    '200',
     '--5h-limit',
     '1000',
     '--5h-reset-at',
@@ -296,6 +372,7 @@ test('check exits HOLD when predicted burn would cross a window usage cap', () =
   assert.equal(result.status, 10);
   assert.equal(result.json.status, 'HOLD');
   assert.deepEqual(result.json.blockingWindows, ['fiveHour']);
+  assert.equal(result.json.reason, 'remaining_threshold_reached');
 });
 
 test('check uses the default cold-start prediction when there is no completion history', () => {
@@ -332,7 +409,7 @@ test('check --wait allows a cold start when no budget snapshot exists', () => {
   assert.equal(result.json.predictedTokens, 60000);
   assert.equal(result.json.predictionSource, 'cold_start');
   assert.equal(result.json.budgetSource, 'default_unconfigured');
-  assert.equal(result.json.usableBudget, 180000);
+  assert.equal(result.json.usableBudget, 160000);
 });
 
 test('check --wait holds instead of sleeping past max wait', () => {

@@ -24,6 +24,32 @@ test('predictTokens uses p75 from the last 10 completed issues', () => {
   assert.equal(predictTokens(history), 90);
 });
 
+test('predictTokens uses an upper median for sparse completion history', () => {
+  const history = [
+    { issueId: 'PK6-140', tokens: 80_000, completedAt: '2026-06-27T16:35:42.361Z' },
+    { issueId: 'PK6-141', tokens: 100_000, completedAt: '2026-06-27T17:44:43.699Z' },
+    { issueId: 'PK6-144', tokens: 180_000, completedAt: '2026-06-27T18:39:13.581Z' }
+  ];
+
+  assert.equal(predictTokens(history), 100_000);
+});
+
+test('predictTokens excludes review bundle estimates from implementation predictions', () => {
+  const history = [
+    { issueId: 'PK6-140', tokens: 80_000, completedAt: '2026-06-27T16:35:42.361Z' },
+    { issueId: 'PK6-141', tokens: 100_000, completedAt: '2026-06-27T17:44:43.699Z' },
+    {
+      issueId: 'PK6-144-review',
+      kind: 'review',
+      tokens: 180_000,
+      tokensSource: 'review_bundle',
+      completedAt: '2026-06-27T18:39:13.581Z'
+    }
+  ];
+
+  assert.equal(predictTokens(history), 100_000);
+});
+
 test('decideCheck allows an issue when usable budget covers predicted usage', () => {
   const state = {
     ...initialState(),
@@ -87,15 +113,14 @@ test('decideCheck holds an issue when usable budget does not cover predicted usa
   });
 });
 
-test('decideCheck holds before crossing the five hour usage cap', () => {
+test('decideCheck holds when five hour remaining is at or below 20 percent', () => {
   const state = {
     ...initialState(),
     budget: {
       windows: {
         fiveHour: {
-          remainingTokens: 150,
+          remainingTokens: 200,
           limitTokens: 1_000,
-          maxUsageRatio: 0.9,
           resetAt: '2026-06-27T05:00:00.000Z'
         }
       },
@@ -112,27 +137,26 @@ test('decideCheck holds before crossing the five hour usage cap', () => {
   const result = decideCheck(state, 'PK6-5', { now: '2026-06-27T04:00:00.000Z' });
 
   assert.equal(result.status, 'HOLD');
-  assert.equal(result.reason, 'budget_insufficient');
-  assert.equal(result.usableBudget, 50);
+  assert.equal(result.reason, 'remaining_threshold_reached');
+  assert.equal(result.windows[0].remainingRatio, 0.2);
+  assert.equal(result.windows[0].minRemainingRatio, 0.2);
   assert.deepEqual(result.blockingWindows, ['fiveHour']);
   assert.equal(result.resetAt, '2026-06-27T05:00:00.000Z');
 });
 
-test('decideCheck holds before crossing the weekly usage cap', () => {
+test('decideCheck allows when remaining ratio is above each window threshold even with a large prediction', () => {
   const state = {
     ...initialState(),
     budget: {
       windows: {
         fiveHour: {
-          remainingTokens: 800,
+          remainingTokens: 210,
           limitTokens: 1_000,
-          maxUsageRatio: 0.9,
           resetAt: '2026-06-27T05:00:00.000Z'
         },
         weekly: {
-          remainingTokens: 80,
+          remainingTokens: 101,
           limitTokens: 1_000,
-          maxUsageRatio: 0.95,
           resetAt: '2026-07-04T00:00:00.000Z'
         }
       },
@@ -148,8 +172,37 @@ test('decideCheck holds before crossing the weekly usage cap', () => {
 
   const result = decideCheck(state, 'PK6-5', { now: '2026-06-27T04:00:00.000Z' });
 
+  assert.equal(result.status, 'ALLOW');
+  assert.deepEqual(result.blockingWindows, []);
+  assert.equal(result.resetAt, null);
+});
+
+test('decideCheck holds when weekly remaining is at or below 10 percent', () => {
+  const state = {
+    ...initialState(),
+    budget: {
+      windows: {
+        fiveHour: {
+          remainingTokens: 800,
+          limitTokens: 1_000,
+          resetAt: '2026-06-27T05:00:00.000Z'
+        },
+        weekly: {
+          remainingTokens: 100,
+          limitTokens: 1_000,
+          resetAt: '2026-07-04T00:00:00.000Z'
+        }
+      },
+      updatedAt: '2026-06-27T00:00:00.000Z'
+    }
+  };
+
+  const result = decideCheck(state, 'PK6-5', { now: '2026-06-27T04:00:00.000Z' });
+
   assert.equal(result.status, 'HOLD');
-  assert.equal(result.usableBudget, 30);
+  assert.equal(result.reason, 'remaining_threshold_reached');
+  assert.equal(result.windows[1].remainingRatio, 0.1);
+  assert.equal(result.windows[1].minRemainingRatio, 0.1);
   assert.deepEqual(result.blockingWindows, ['weekly']);
   assert.equal(result.resetAt, '2026-07-04T00:00:00.000Z');
 });
@@ -188,14 +241,13 @@ test('decideCheck bootstraps default budget windows when no budget snapshot exis
   assert.equal(result.status, 'ALLOW');
   assert.equal(result.exitCode, 0);
   assert.equal(result.issueId, 'PK6-140');
-  assert.equal(result.predictedTokens, 60_000);
-  assert.equal(result.predictionSource, 'cold_start');
   assert.equal(result.budgetSource, 'default_unconfigured');
-  assert.equal(result.usableBudget, 180_000);
   assert.deepEqual(result.blockingWindows, []);
   assert.equal(result.windows[0].name, 'fiveHour');
+  assert.equal(result.windows[0].minRemainingRatio, 0.2);
   assert.equal(result.windows[0].resetAt, '2026-06-27T05:00:00.000Z');
   assert.equal(result.windows[1].name, 'weekly');
+  assert.equal(result.windows[1].minRemainingRatio, 0.1);
   assert.equal(result.windows[1].resetAt, '2026-07-04T00:00:00.000Z');
 });
 
@@ -346,6 +398,38 @@ test('appendCompletion records completed issues and decrements known remaining t
     {
       issueId: 'PK6-1',
       tokens: 2_000,
+      completedAt: '2026-06-27T02:00:00.000Z'
+    }
+  ]);
+});
+
+test('appendCompletion records completion metadata separately from charged tokens', () => {
+  const state = updateSnapshot(initialState(), {
+    remainingTokens: 12_345,
+    reserveTokens: 1_000,
+    resetAt: '2026-06-27T12:00:00.000Z',
+    now: '2026-06-27T01:00:00.000Z'
+  });
+
+  const updated = appendCompletion(state, {
+    issueId: 'PK6-144',
+    tokens: 2_000,
+    kind: 'implementation',
+    reviewBundleTokens: 180_000,
+    elapsedMinutes: 72,
+    startedAt: '2026-06-27T00:48:00.000Z',
+    completedAt: '2026-06-27T02:00:00.000Z'
+  });
+
+  assert.equal(updated.budget.remainingTokens, 10_345);
+  assert.deepEqual(updated.history, [
+    {
+      issueId: 'PK6-144',
+      tokens: 2_000,
+      kind: 'implementation',
+      reviewBundleTokens: 180_000,
+      elapsedMinutes: 72,
+      startedAt: '2026-06-27T00:48:00.000Z',
       completedAt: '2026-06-27T02:00:00.000Z'
     }
   ]);
