@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import childProcess from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const MONTHS = new Map([
   ['jan', 0],
@@ -28,6 +29,7 @@ const STARTUP_SETTLED_PATTERN = /\bMCP startup (?:complete|incomplete)\b/i;
 const BARE_PROMPT_PATTERN = /(?:^|[\n\r])\s*(?:\u203a|>)\s*$/i;
 const STATUS_TYPED_PATTERN = /(?:^|[\n\r])\s*(?:\u203a|>)\s*\/status\b/i;
 const CODEX_STATUS_CONFIG_ARGS = ['-c', 'service_tier="flex"'];
+const DEFAULT_WORKER_PATH = fileURLToPath(new URL('../bin/codex-status-worker.js', import.meta.url));
 
 function silenceConptyConsoleListAgent(callback) {
   if (process.platform !== 'win32') {
@@ -225,6 +227,181 @@ export function parseCodexStatusSnapshot(text, {
 }
 
 export async function captureCodexStatusText({
+  codexCommand = 'codex',
+  cwd = process.cwd(),
+  timeoutMs = 60_000,
+  settleMs = 500,
+  env = process.env,
+  workerCommand = process.execPath,
+  workerArgs = [DEFAULT_WORKER_PATH],
+  workerShutdownGraceMs = 250,
+  workerTimeoutMs = timeoutMs + 5_000
+} = {}) {
+  return await captureCodexStatusTextViaWorker({
+    codexCommand,
+    cwd,
+    timeoutMs,
+    settleMs,
+    env,
+    workerCommand,
+    workerArgs,
+    workerShutdownGraceMs,
+    workerTimeoutMs
+  });
+}
+
+function killProcessTree(child) {
+  if (!child || !child.pid) {
+    return;
+  }
+
+  if (process.platform === 'win32') {
+    childProcess.spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true
+    });
+    return;
+  }
+
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    // The process may already have exited.
+  }
+}
+
+function cleanupWorker(child, graceMs) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+
+  const kill = () => killProcessTree(child);
+  if (graceMs <= 0) {
+    kill();
+    return;
+  }
+
+  const timer = setTimeout(kill, graceMs);
+  if (typeof timer.unref === 'function') {
+    timer.unref();
+  }
+}
+
+function workerErrorFromMessage(message) {
+  const error = new Error(message?.error?.message ?? 'Codex status worker failed');
+  if (message?.error?.stack) {
+    error.stack = message.error.stack;
+  }
+  return error;
+}
+
+async function captureCodexStatusTextViaWorker({
+  codexCommand,
+  cwd,
+  timeoutMs,
+  settleMs,
+  env,
+  workerCommand,
+  workerArgs,
+  workerShutdownGraceMs,
+  workerTimeoutMs
+}) {
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    let stdout = '';
+    let stderr = '';
+
+    const child = childProcess.spawn(workerCommand, workerArgs, {
+      cwd,
+      env: {
+        ...env,
+        TOKEN_GOVERNOR_CODEX_STATUS_WORKER_OPTIONS: JSON.stringify({
+          codexCommand,
+          cwd,
+          timeoutMs,
+          settleMs
+        })
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true
+    });
+
+    const finish = (error, output) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeoutTimer);
+      cleanupWorker(child, workerShutdownGraceMs);
+
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(output);
+    };
+
+    const parseStdout = () => {
+      const newlineIndex = stdout.indexOf('\n');
+      if (newlineIndex === -1) {
+        return;
+      }
+
+      const line = stdout.slice(0, newlineIndex).trim();
+      if (!line) {
+        stdout = stdout.slice(newlineIndex + 1);
+        parseStdout();
+        return;
+      }
+
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        finish(new Error(`Codex status worker returned non-JSON output:\n${tail(stdout, 2000)}`));
+        return;
+      }
+
+      if (message.ok === true) {
+        finish(null, message.output ?? '');
+        return;
+      }
+
+      finish(workerErrorFromMessage(message));
+    };
+
+    const timeoutTimer = setTimeout(() => {
+      finish(new Error(`Timed out waiting for Codex status worker after ${workerTimeoutMs}ms`));
+    }, workerTimeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      parseStdout();
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+
+    child.on('error', (error) => finish(error));
+
+    child.on('exit', (exitCode, signal) => {
+      if (settled) {
+        return;
+      }
+      const stderrTail = tail(stderr, 2000).trim();
+      const stdoutTail = tail(stdout, 2000).trim();
+      const details = [
+        `Codex status worker exited before producing JSON (exit ${exitCode}, signal ${signal ?? 'none'})`,
+        stderrTail ? `stderr:\n${stderrTail}` : null,
+        stdoutTail ? `stdout:\n${stdoutTail}` : null
+      ].filter(Boolean).join('\n');
+      finish(new Error(details));
+    });
+  });
+}
+
+export async function captureCodexStatusTextInProcess({
   codexCommand = 'codex',
   cwd = process.cwd(),
   timeoutMs = 60_000,

@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   codexStatusFailureMessage,
   codexStatusInput,
+  captureCodexStatusText,
   parseCodexStatusSnapshot,
   resolveCodexSpawn,
   shouldAttemptCodexStatus
@@ -11,6 +15,31 @@ import {
 
 test('shouldAttemptCodexStatus starts when the bare prompt is visible', () => {
   assert.equal(shouldAttemptCodexStatus('\n\u203a '), true);
+});
+
+test('captureCodexStatusText returns after worker output even if the worker keeps handles alive', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'token-governor-codex-status-worker-'));
+  const workerPath = join(dir, 'worker.mjs');
+  const statusOutput = [
+    '5h limit:     [xxxxxxxxxxxxxxxxxxx-] 97% left (resets 03:34)',
+    'Weekly limit: [xxxxxxxxxxxxxxxx----] 78% left (resets 14:23 on 5 Jul)'
+  ].join('\n');
+
+  writeFileSync(workerPath, [
+    `process.stdout.write(JSON.stringify({ ok: true, output: ${JSON.stringify(statusOutput)} }) + '\\n');`,
+    'setInterval(() => {}, 1000);'
+  ].join('\n'));
+
+  const startedAt = Date.now();
+  const output = await captureCodexStatusText({
+    workerCommand: process.execPath,
+    workerArgs: [workerPath],
+    workerShutdownGraceMs: 50,
+    timeoutMs: 1000
+  });
+
+  assert.equal(output, statusOutput);
+  assert.ok(Date.now() - startedAt < 900);
 });
 
 test('codexStatusFailureMessage includes captured output tail', () => {
